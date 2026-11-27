@@ -372,3 +372,32 @@ def add_school_test(body: SchoolTestIn, user=Depends(authenticate), db=Depends(g
     db.add(t)
     db.commit()
     return {"id": t.id}
+
+
+# ---- admin: corpus upload (parent only) -----------------------------------------------------
+from fastapi import File, Form, UploadFile  # noqa: E402
+
+from .auth import require_parent  # noqa: E402
+from .corpus import ingest as ingest_mod  # noqa: E402
+from .models import SourceDocument  # noqa: E402
+from .upload_admission import serial_upload  # noqa: E402
+
+
+@router.post("/admin/corpus/upload")
+@serial_upload
+def upload_source(kind: str = Form(...), file: UploadFile = File(...), user=Depends(require_parent), db=Depends(get_db)):
+    from . import config
+    data = file.file.read(config.MAX_UPLOAD + 1)
+    if len(data) > config.MAX_UPLOAD:
+        raise HTTPException(413, "File is too large")
+    try:
+        doc, created = ingest_mod.store_upload(db, data, kind)
+    except ingest_mod.IngestError as error:
+        raise HTTPException(422, str(error)) from None
+    return {"id": doc.id, "created": created, "pages": doc.pages, "status": doc.status}
+
+
+@router.get("/admin/corpus/documents")
+def list_sources(user=Depends(require_parent), db=Depends(get_db)):
+    rows = db.scalars(select(SourceDocument).order_by(SourceDocument.created.desc())).all()
+    return [{"id": d.id, "kind": d.kind, "pages": d.pages, "status": d.status, "created": d.created} for d in rows]
