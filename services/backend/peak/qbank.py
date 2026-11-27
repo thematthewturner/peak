@@ -178,6 +178,7 @@ class ImportReport:
     rejected: list[tuple[int, str]] = field(default_factory=list)
     unmatched_skills: dict[str, int] = field(default_factory=dict)
     verified: int = 0
+    understood: int = 0  # stem and answer key were both read: the format is understood, whatever else holds an item
     check_failures: dict[str, int] = field(default_factory=dict)
     detail_keys: dict[str, int] = field(default_factory=dict)
     legacy_keys: dict[str, int] = field(default_factory=dict)
@@ -235,6 +236,7 @@ def _record_checks(db, item, checks, report) -> None:
             report.check_failures[name] = report.check_failures.get(name, 0) + 1
     # Skill match is advisory (can be fixed in review); schema, key and figure are gating.
     item.status = "verified" if all(p for n, p, _ in checks if n != "skill_known") else "review"
+    report.understood += all(p for n, p, _ in checks if n in ("schema", "key_present"))
 
 
 def _refresh(db, existing, fresh, checks, report) -> bool:
@@ -319,11 +321,13 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
         report.verified += item.status == "verified"
         report.created += 1
     processed = report.created + report.updated
-    if processed >= 10 and report.verified / processed < min_usable_ratio:
+    # Abort only when stems/keys can't be read (a misread format). Items held for another reason, such as
+    # a figure, are legitimate and must not trigger a rollback.
+    if processed >= 10 and report.understood / processed < min_usable_ratio:
         # Most items unusable means the export shape was misread. Do not publish half-garbage.
         db.rollback()
         report.aborted = (
-            f"only {report.verified}/{processed} items passed checks; the export format is not understood. "
+            f"only {report.understood}/{processed} items had a readable stem and answer key; the export format is not understood. "
             f"failed checks: {report.check_failures}; content fields seen: {sorted(report.detail_keys)}"
         )
         return report

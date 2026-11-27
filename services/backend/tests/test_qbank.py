@@ -290,3 +290,11 @@ def test_legacy_with_unknown_key_field_is_held_and_visible(db, tmp_path):
     rep = import_jsonl(db, write(tmp_path, rec))
     assert db.scalar(select(Item)).status == "review" and rep.check_failures.get("key_present") == 1
     assert "answer.mystery_field" in rep.legacy_keys  # the report tells us what the real field is called
+
+
+def test_figure_held_items_do_not_trigger_the_abort_guard(db, tmp_path):
+    seed_skills(db)
+    figs = [nested(f"fg{i}", detail={"stem": f'<p>See graph {i}.</p><img src="https://cdn.example/{i}.png">'}) for i in range(12)]
+    rep = import_jsonl(db, write(tmp_path, *figs))
+    assert rep.aborted is None and rep.understood == 12 and rep.verified == 0
+    assert {i.status for i in db.scalars(select(Item))} == {"review"}  # held, but saved and counted
