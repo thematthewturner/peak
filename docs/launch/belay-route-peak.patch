@@ -1,0 +1,51 @@
+diff --git a/infra/Caddyfile b/infra/Caddyfile
+index e0363bf..0a34267 100644
+--- a/infra/Caddyfile
++++ b/infra/Caddyfile
+@@ -21,3 +21,24 @@
+         reverse_proxy web:3000
+     }
+ }
++
++# Peak (SAT prep) is a separate Compose project on the shared `edge` network. Its services are named
++# peak-* so these names never collide with Belay's api/web.
++peak.mturner.work {
++    encode zstd gzip
++    header {
++        Strict-Transport-Security "max-age=31536000"
++        X-Content-Type-Options "nosniff"
++        Referrer-Policy "same-origin"
++        X-Frame-Options "DENY"
++    }
++    request_body {
++        max_size 40MB
++    }
++    handle /api/* {
++        reverse_proxy peak-api:8000
++    }
++    handle {
++        reverse_proxy peak-web:3000
++    }
++}
+diff --git a/infra/compose.yaml b/infra/compose.yaml
+index a2c4443..69ec62b 100644
+--- a/infra/compose.yaml
++++ b/infra/compose.yaml
+@@ -19,6 +19,9 @@ services:
+     networks:
+       default:
+         ipv4_address: 172.30.0.10
++      # Shared with Peak (separate Compose project). Fixed address: Peak trusts it as the only proxy.
++      edge:
++        ipv4_address: 172.31.0.10
+     image: caddy:2.11.2-alpine
+     environment:
+       APP_HOSTNAME: ${APP_HOSTNAME:?Set APP_HOSTNAME}
+@@ -80,3 +83,7 @@ networks:
+     ipam:
+       config:
+         - subnet: 172.30.0.0/24
++  # Create once on the host before deploying:  docker network create --subnet 172.31.0.0/24 edge
++  edge:
++    external: true
++    name: edge

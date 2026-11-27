@@ -17,19 +17,19 @@ complete=0
 cleanup() {
   result=$?
   trap - EXIT
-  if (( stopped )); then if ! "${compose[@]}" start api worker; then result=1; fi; fi
+  if (( stopped )); then if ! "${compose[@]}" start peak-api worker; then result=1; fi; fi
   rm -rf "$staging_dir"
   if (( ! complete )); then rm -f "$output" "$output.sha256"; fi
   exit "$result"
 }
 trap cleanup EXIT
 stopped=1
-"${compose[@]}" stop api worker
+"${compose[@]}" stop peak-api worker
 "${compose[@]}" exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$staging_dir/database.dump"
 cp -a /srv/peak/data/files "$staging_dir/files"
 cp /etc/peak/peak.env "$staging_dir/peak.env"
 (cd "$staging_dir" && find files -type f -print0 | sort -z | xargs -0 -r sha256sum > files.sha256 && sha256sum database.dump peak.env files.sha256 > bundle.sha256)
-"${compose[@]}" start api worker
+"${compose[@]}" start peak-api worker
 stopped=0
 # AES-GCM authenticates the encrypted CMS envelope. Only the public recipient
 # certificate reaches this host; no decryption secret is needed or retained here.

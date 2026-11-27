@@ -38,7 +38,7 @@ status() {
   # shellcheck disable=SC2046
   docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom_killed={{.State.OOMKilled}}' $(compose ps -q) || true
   section "readiness"
-  compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/readiness', timeout=5).read().decode())" || echo "readiness: unavailable"
+  compose exec -T peak-api python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/readiness', timeout=5).read().decode())" || echo "readiness: unavailable"
   section "host"
   df -h /srv/peak | tail -1
   free -m | sed -n 2p
@@ -57,7 +57,7 @@ diagnose() {
   local hours=${1:-48}
   [[ "$hours" =~ ^[0-9]{1,3}$ ]] || { echo "HOURS must be 1-999" >&2; exit 2; }
   section "worker/api warnings (last ${hours}h)"
-  compose logs --since "${hours}h" --no-color worker api 2>&1 \
+  compose logs --since "${hours}h" --no-color worker peak-api 2>&1 \
     | grep -E 'Job failed|Lease heartbeat|Traceback|Error|Exception|Killed|OOM' | tail -n 200 || true
   section "recent jobs"
   sql "select created, kind, state, model_id, left(coalesce(error,''), 160) as error

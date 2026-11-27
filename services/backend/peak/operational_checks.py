@@ -13,18 +13,21 @@ MANUAL_BACKUP_DIR = Path("/srv/peak/backups/manual")
 def validate_release(config, revision):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Release requires a full lowercase 40-character commit SHA")
-    for service, repository in (("api", "peak-backend"), ("worker", "peak-backend"), ("web", "peak-web")):
+    for service, repository in (("peak-api", "peak-backend"), ("worker", "peak-backend"), ("peak-web", "peak-web")):
         expected = f"ghcr.io/thematthewturner/{repository}:{revision}"
         if config["services"][service]["image"] != expected:
             raise ValueError(f"{service} must use the requested GHCR commit image")
-    for service in ("api", "worker", "web", "postgres"):
+    for service in ("peak-api", "worker", "peak-web", "postgres"):
         if config["services"][service].get("ports"):
             raise ValueError(f"{service} must not expose a host port; the edge proxy owns 80/443")
-    if not config["services"]["api"].get("environment", {}).get("FORWARDED_ALLOW_IPS"):
+    if not config["services"]["peak-api"].get("environment", {}).get("FORWARDED_ALLOW_IPS"):
         raise ValueError("FORWARDED_ALLOW_IPS must name the edge proxy address")
     for service in ("worker", "postgres"):
         if "edge" in (config["services"][service].get("networks") or {}):
             raise ValueError(f"{service} must stay off the shared edge network")
+    for service, spec in config["services"].items():
+        if "edge" in (spec.get("networks") or {}) and not service.startswith("peak-"):
+            raise ValueError(f"{service} is on the shared edge network but is not named peak-*: bare names like api/web would also resolve to Belay")
     if config.get("name") != "peak":
         raise ValueError("Compose project name must be peak")
     return revision

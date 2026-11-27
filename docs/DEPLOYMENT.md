@@ -1,5 +1,7 @@
 # Deployment
 
+> **Launch steps live in [`LAUNCH.md`](LAUNCH.md).** This file describes the optional separate edge-proxy layout.
+
 Peak is its own Compose project (`peak`) on the shared Droplet. It shares only the host and an
 external Docker network named `edge`. **Nothing in this repo changes the Droplet by itself.**
 
@@ -20,12 +22,12 @@ external Docker network named `edge`. **Nothing in this repo changes the Droplet
            X-Frame-Options "DENY"
        }
        request_body { max_size 40MB }
-       handle /api/* { reverse_proxy api:8000 }
-       handle { reverse_proxy web:3000 }
+       handle /api/* { reverse_proxy peak-api:8000 }
+       handle { reverse_proxy peak-web:3000 }
    }
    ```
 
-   Peak's `web` and `api` containers join `edge`; the worker and Postgres never do.
+   Peak's `peak-web` and `peak-api` containers join `edge` (named `peak-*` because Belay also has `api` and `web`, and a bare name on a shared network would resolve to both apps); the worker and Postgres never do.
 4. `/etc/peak/peak.env` (chmod 600) from `.env.example`. Set `EDGE_PROXY_IP` to the proxy's address on
    `edge`: only it may assert client identity. Use Peak's **own** Anthropic key.
 5. Data directories: `/srv/peak/data/{postgres,files}`; release checkout in `/opt/peak`.
@@ -40,5 +42,5 @@ external Docker network named `edge`. **Nothing in this repo changes the Droplet
 `Deploy production` runs `infra/deploy.sh <sha>` via the forced-command key: label check, backup gate,
 drain the worker, migrate while quiesced, readiness check, automatic rollback only if no migration ran.
 
-Create the first accounts on the host: `docker compose ... run --rm api python -m peak.manage addison --role student`
+Create the first accounts on the host: `docker compose ... run --rm peak-api python -m peak.manage addison --role student`
 and `... matt --role parent`, then `python -m peak.seed`.

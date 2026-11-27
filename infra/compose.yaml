@@ -1,6 +1,8 @@
 name: peak
 # Peak is its own Compose project. It shares only the host and the external `edge` network,
-# where the edge proxy (a separate project) owns ports 80/443 and routes peak.mturner.work -> web/api.
+# where the edge proxy (a separate project) owns ports 80/443 and routes peak.mturner.work -> peak-web/peak-api.
+# Edge-facing services are named peak-* on purpose: Belay also has `api` and `web`, and a shared network
+# would resolve those bare names to BOTH apps.
 x-backend: &backend
   image: ${BACKEND_IMAGE:?Set immutable BACKEND_IMAGE}
   env_file: ${PEAK_ENV_FILE:-/etc/peak/peak.env}
@@ -16,18 +18,18 @@ x-backend: &backend
     driver: json-file
     options: {max-size: "10m", max-file: "3"}
 services:
-  web:
+  peak-web:
     mem_limit: ${WEB_MEMORY_LIMIT:-256m}
     image: ${WEB_IMAGE:?Set immutable WEB_IMAGE}
     environment:
-      API_INTERNAL_URL: http://api:8000
+      API_INTERNAL_URL: http://peak-api:8000
     networks: [default, edge]
-    depends_on: [api]
+    depends_on: [peak-api]
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     logging: *logs
-  api:
+  peak-api:
     <<: *backend
     mem_limit: ${API_MEMORY_LIMIT:-512m}
     networks: [default, edge]
