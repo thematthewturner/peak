@@ -353,3 +353,32 @@ def test_hold_reasons_are_reported_even_for_unchanged_items(db, tmp_path):
     import_jsonl(db, p)
     again = import_jsonl(db, p, reprocess=True)  # nothing changes, but the hold must still be visible
     assert again.updated == 0 and again.check_failures == {"figure": 1}
+
+
+def test_reprocess_keeps_blind_solve_results_and_a_disputed_key_stays_pulled(db, tmp_path):
+    from peak.models import ItemCheck
+    seed_skills(db)
+    p = write(tmp_path, nested("disp"))
+    import_jsonl(db, p)
+    item = db.scalar(select(Item))
+    db.add(ItemCheck(item_id=item.id, check="blind_solve", passed=False, detail="{}"))
+    item.status = "review"
+    db.commit()
+    rep = import_jsonl(db, p, reprocess=True)
+    db.expire_all()
+    assert rep.updated == 0 and db.scalar(select(Item)).status == "review"
+    assert db.scalar(select(ItemCheck).where(ItemCheck.check == "blind_solve")) is not None
+
+
+def test_changed_key_discards_the_stale_blind_solve_and_reverifies(db, tmp_path):
+    from peak.models import ItemCheck
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested("chg"), name="a.jsonl"))
+    item = db.scalar(select(Item))
+    db.add(ItemCheck(item_id=item.id, check="blind_solve", passed=False, detail="{}"))
+    item.status = "review"
+    db.commit()
+    import_jsonl(db, write(tmp_path, nested("chg", detail={"correct_answer": ["C"]}), name="b.jsonl"))
+    db.expire_all()
+    assert db.scalar(select(Item)).status == "verified"
+    assert db.scalar(select(ItemCheck).where(ItemCheck.check == "blind_solve")) is None

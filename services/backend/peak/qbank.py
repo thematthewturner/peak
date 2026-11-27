@@ -268,6 +268,15 @@ def _record_checks(db, item, checks, report) -> None:
     report.understood += all(p for n, p, _ in checks if n in ("schema", "key_present"))
 
 
+IMPORT_CHECKS = ("schema", "key_present", "skill_known", "figure")  # owned by the importer; others (blind_solve) are not
+
+
+def _key_disputed(db, item_id) -> bool:
+    """A blind solve disagreed with the official key twice: the item stays out of service until a human decides."""
+    return bool(db.scalar(select(ItemCheck.id).where(ItemCheck.item_id == item_id, ItemCheck.check == "blind_solve",
+                                                     ItemCheck.passed.is_(False))))
+
+
 def _refresh(db, existing, fresh, checks, report) -> bool:
     """Re-import of a known Question ID. Returns True if the stored item changed.
 
@@ -284,18 +293,23 @@ def _refresh(db, existing, fresh, checks, report) -> bool:
     if existing.status == "verified" and not fresh_ok:
         return False  # never let a worse export downgrade a verified item
     fields = ("skill_id", "family_id", "difficulty", "format", "benchmark_locked", "content", "key", "rationale")
-    fresh_status = "verified" if fresh_ok else "review"
+    disputed = _key_disputed(db, existing.id) and (existing.content, existing.key) == (fresh.content, fresh.key)
+    fresh_status = "verified" if fresh_ok and not disputed else "review"
     # Status counts as a change: an item held by an older, stricter rule must be re-evaluated even when
     # its stored content already matches the export.
     changed = existing.status != fresh_status or any(getattr(existing, f) != getattr(fresh, f) for f in fields)
     if not changed:
         return False
-    if (existing.content, existing.key) != (fresh.content, fresh.key):
-        existing.version += 1
+    stale = ["blind_solve"] if (existing.content, existing.key) != (fresh.content, fresh.key) else []
+    if stale:
+        existing.version += 1  # content or key changed: an earlier blind solve no longer applies
     for f in fields:
         setattr(existing, f, getattr(fresh, f))
-    db.query(ItemCheck).filter(ItemCheck.item_id == existing.id).delete()
+    db.query(ItemCheck).filter(ItemCheck.item_id == existing.id, ItemCheck.check.in_(list(IMPORT_CHECKS) + stale)).delete(
+        synchronize_session=False)
     _record_checks(db, existing, checks, report)
+    if _key_disputed(db, existing.id):
+        existing.status = "review"
     report.verified += existing.status == "verified"
     return True
 
