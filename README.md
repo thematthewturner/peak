@@ -1,10 +1,24 @@
 # Peak
 
-SAT prep for Addison. Find the points she's still losing, fix them once, prove it on an unseen question.
+SAT prep for Addison. Find the points she's still losing, fix them once, prove it on a question she's never seen.
 
-- Plan: [`docs/PRD.md`](docs/PRD.md)
-- Backend: `services/backend` (`pip install -e '.[dev]' && pytest`)
-- The repo ships with zero official content; the corpus is private (PRD s8.5).
+- Plan: [`docs/PRD.md`](docs/PRD.md) · Build status: [`docs/STATUS.md`](docs/STATUS.md)
+- Deployment (owner steps, nothing automatic): [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- Private corpus rules and import: [`docs/DATA.md`](docs/DATA.md)
 
-## Status
-P2 started: exam definition, taxonomy, numeric-entry validator. Next: core schema + migrations, then P3 ingestion.
+## Develop
+
+```bash
+cd services/backend
+uv sync && uv run alembic upgrade head
+PEAK_DEMO=1 uv run uvicorn peak.api:app --port 8000     # demo logins: student/peak-student-demo, parent/peak-parent-demo
+uv run pytest -q && uv run ruff check peak tests
+```
+
+```bash
+cd apps/web
+npm ci && API_INTERNAL_URL=http://127.0.0.1:8000 npm run dev
+npm run typecheck && npm run lint && npm test
+```
+
+The repo ships with zero official content.

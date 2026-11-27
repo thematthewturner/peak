@@ -6,3 +6,6 @@ __pycache__/
 # Official/private corpus must never be committed (PRD s8.5)
 corpus-data/
 *.pdf
+node_modules/
+.next/
+*.tsbuildinfo

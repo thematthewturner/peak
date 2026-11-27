@@ -409,3 +409,12 @@ def upload_source(kind: str = Form(...), file: UploadFile = File(...), user=Depe
 def list_sources(user=Depends(require_parent), db=Depends(get_db)):
     rows = db.scalars(select(SourceDocument).order_by(SourceDocument.created.desc())).all()
     return [{"id": d.id, "kind": d.kind, "pages": d.pages, "status": d.status, "created": d.created} for d in rows]
+
+
+@router.get("/taxonomy")
+def taxonomy(user=Depends(authenticate)):
+    from .taxonomy import MICRO_SKILLS
+    return {
+        "causes": [c.value for c in Cause],
+        "micro_skills": [{"key": m.key, "cause": m.cause.value, "label": m.label, "cue": m.cue} for m in MICRO_SKILLS],
+    }
