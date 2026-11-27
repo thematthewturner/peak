@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+.env
+# Official/private corpus must never be committed (PRD s8.5)
+corpus-data/
+*.pdf
+node_modules/
+.next/
+*.tsbuildinfo

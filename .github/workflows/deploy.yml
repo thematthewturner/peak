@@ -1,0 +1,48 @@
+name: Deploy production
+# Runs after "Verify Peak" succeeds on a push to main (tests, build, browser
+# suite and the commit-SHA images were all produced by that run). Deploys exactly
+# that commit through the forced-command SSH key in infra/ops-entry.sh.
+# Add required reviewers to the `production` environment for a one-click gate.
+on:
+  workflow_run:
+    workflows: [Verify Peak]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: peak-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Deploy the commit that passed CI
+        env:
+          SSH_KEY: ${{ secrets.PEAK_OPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PEAK_OPS_KNOWN_HOSTS }}
+          OPS_HOST: ${{ secrets.PEAK_OPS_HOST }}
+          OPS_USER: ${{ secrets.PEAK_OPS_USER }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'unexpected commit id' >&2; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/ops && chmod 600 ~/.ssh/ops
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/ops -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 "$OPS_USER@$OPS_HOST" "deploy $SHA"
+      - name: Public readiness after deploy
+        run: |
+          for attempt in $(seq 1 30); do
+            curl -fsS https://peak.mturner.work/api/readiness && exit 0
+            sleep 3
+          done
+          echo 'Production did not become ready; the previous release is recorded in the deploy log.' >&2
+          exit 1
+      - name: Confirm the new release is serving
+        run: |
+          curl -fsSI https://peak.mturner.work/api/health | grep -i '^x-request-id' \
+            || { echo 'Health endpoint is missing X-Request-ID (old API still running?)' >&2; exit 1; }
