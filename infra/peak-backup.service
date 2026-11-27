@@ -1,0 +1,9 @@
+[Unit]
+Description=Encrypted off-host Peak backup
+Requires=docker.service
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/opt/peak/infra/backup.sh
+User=root
+UMask=0077

@@ -1,0 +1,10 @@
+name: peak-local
+# Local development database only: docker compose -f infra/compose.local.yaml up -d
+services:
+  postgres:
+    image: postgres:17.9-bookworm
+    environment:
+      POSTGRES_DB: peak
+      POSTGRES_USER: peak
+      POSTGRES_PASSWORD: local-only-dev-password
+    ports: ["127.0.0.1:5432:5432"]

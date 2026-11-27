@@ -1,0 +1,88 @@
+name: Peak ops
+# Manual production channel: inspect the Droplet or deploy a CI-built release.
+# Requires repository secrets PEAK_OPS_SSH_KEY, PEAK_OPS_HOST, PEAK_OPS_USER
+# and PEAK_OPS_KNOWN_HOSTS, plus the forced-command key described in
+# infra/ops-entry.sh. The key can run only status, diagnose and deploy.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to run on the Droplet
+        type: choice
+        options: [status, diagnose, deploy]
+        default: status
+      sha:
+        description: Full commit SHA to deploy (deploy only; must have green main CI images)
+        required: false
+        default: ''
+      hours:
+        description: Log window for diagnose
+        required: false
+        default: '48'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: peak-production
+  cancel-in-progress: false
+jobs:
+  inspect:
+    if: inputs.action != 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run read-only command
+        env:
+          SSH_KEY: ${{ secrets.PEAK_OPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PEAK_OPS_KNOWN_HOSTS }}
+          OPS_HOST: ${{ secrets.PEAK_OPS_HOST }}
+          OPS_USER: ${{ secrets.PEAK_OPS_USER }}
+          ACTION: ${{ inputs.action }}
+          HOURS: ${{ inputs.hours }}
+        run: |
+          [[ "$HOURS" =~ ^[0-9]{1,3}$ ]] || { echo 'hours must be numeric' >&2; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/ops && chmod 600 ~/.ssh/ops
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          command="$ACTION"
+          [[ "$ACTION" == diagnose ]] && command="diagnose $HOURS"
+          ssh -i ~/.ssh/ops -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 "$OPS_USER@$OPS_HOST" "$command"
+      - name: Public health
+        run: curl -fsS https://peak.mturner.work/api/readiness
+
+  deploy:
+    if: inputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment for a manual approval gate.
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Require a green main CI run with published images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'sha must be a full 40-character commit' >&2; exit 1; }
+          green=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&branch=main&event=push&status=success" --jq '.total_count')
+          [[ "$green" -ge 1 ]] || { echo "No successful main CI run (and therefore no images) for $SHA" >&2; exit 1; }
+      - name: Deploy on the Droplet
+        env:
+          SSH_KEY: ${{ secrets.PEAK_OPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PEAK_OPS_KNOWN_HOSTS }}
+          OPS_HOST: ${{ secrets.PEAK_OPS_HOST }}
+          OPS_USER: ${{ secrets.PEAK_OPS_USER }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/ops && chmod 600 ~/.ssh/ops
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/ops -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 "$OPS_USER@$OPS_HOST" "deploy $SHA"
+      - name: Public readiness after deploy
+        run: |
+          for attempt in $(seq 1 20); do
+            curl -fsS https://peak.mturner.work/api/readiness && exit 0
+            sleep 3
+          done
+          exit 1

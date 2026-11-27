@@ -1,0 +1,71 @@
+name: peak
+# Peak is its own Compose project. It shares only the host and the external `edge` network,
+# where the edge proxy (a separate project) owns ports 80/443 and routes peak.mturner.work -> web/api.
+x-backend: &backend
+  image: ${BACKEND_IMAGE:?Set immutable BACKEND_IMAGE}
+  env_file: ${PEAK_ENV_FILE:-/etc/peak/peak.env}
+  volumes:
+    - /srv/peak/data/files:/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging: &logs
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+services:
+  web:
+    mem_limit: ${WEB_MEMORY_LIMIT:-256m}
+    image: ${WEB_IMAGE:?Set immutable WEB_IMAGE}
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    networks: [default, edge]
+    depends_on: [api]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging: *logs
+  api:
+    <<: *backend
+    mem_limit: ${API_MEMORY_LIMIT:-512m}
+    networks: [default, edge]
+    environment:
+      # Only the edge proxy may assert client identity. Set to its address on the edge network.
+      FORWARDED_ALLOW_IPS: ${EDGE_PROXY_IP:?Set EDGE_PROXY_IP}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  worker:
+    <<: *backend
+    # Ingestion renders PDFs, so the worker gets the largest allowance.
+    mem_limit: ${WORKER_MEMORY_LIMIT:-768m}
+    command: [python, -m, peak.worker]
+    # Let the current job finish after SIGTERM (an ingest batch can take minutes).
+    stop_grace_period: 120s
+  postgres:
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-384m}
+    image: postgres:17.9-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-peak}
+      POSTGRES_USER: ${POSTGRES_USER:-peak}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - /srv/peak/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *logs
+
+networks:
+  default:
+    name: peak-private
+  edge:
+    external: true
+    name: edge
