@@ -282,7 +282,10 @@ def _refresh(db, existing, fresh, checks, report) -> bool:
     if existing.status == "verified" and not fresh_ok:
         return False  # never let a worse export downgrade a verified item
     fields = ("skill_id", "family_id", "difficulty", "format", "benchmark_locked", "content", "key", "rationale")
-    changed = any(getattr(existing, f) != getattr(fresh, f) for f in fields)
+    fresh_status = "verified" if fresh_ok else "review"
+    # Status counts as a change: an item held by an older, stricter rule must be re-evaluated even when
+    # its stored content already matches the export.
+    changed = existing.status != fresh_status or any(getattr(existing, f) != getattr(fresh, f) for f in fields)
     if not changed:
         return False
     if (existing.content, existing.key) != (fresh.content, fresh.key):

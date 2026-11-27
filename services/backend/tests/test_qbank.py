@@ -323,3 +323,15 @@ def test_remote_svg_and_object_figures_are_held(db, tmp_path):
             nested("f4", detail={"stem": '<p>x</p><img alt="no src">'})]
     rep = import_jsonl(db, write(tmp_path, *recs))
     assert rep.check_failures == {"figure": 4} and rep.verified == 0
+
+
+def test_reprocess_re_evaluates_a_stale_status_even_when_content_is_unchanged(db, tmp_path):
+    seed_skills(db)
+    p = write(tmp_path, nested("stale"))
+    import_jsonl(db, p)
+    item = db.scalar(select(Item))
+    item.status = "review"  # e.g. held by an older, stricter rule; stored content already matches the export
+    db.commit()
+    rep = import_jsonl(db, p, reprocess=True)
+    db.expire_all()
+    assert rep.updated == 1 and db.scalar(select(Item)).status == "verified"
