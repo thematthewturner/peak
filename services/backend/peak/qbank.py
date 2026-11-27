@@ -41,10 +41,59 @@ def _first(rec: dict, *names):
     return None
 
 
+LEGACY_KEY_FIELDS = ("correct_choice", "correctChoice", "correct", "correct_answer", "correctAnswer", "answer", "key", "keys", "answers", "value")
+LEGACY_RATIONALE_FIELDS = ("rationale", "explanation", "solution")
+LEGACY_CORRECT_FLAGS = ("correct", "is_correct", "isCorrect")
+
+
+def _as_dict(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            try:
+                import ast
+                value = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return None
+    return value if isinstance(value, dict) else None
+
+
+def legacy_to_modern(item: dict) -> dict:
+    """Older exports wrap the question in a one-item list: {item_id, section, prompt|body, answer{style,
+    choices{a:{body}}, ...}}. Rewrite it into the modern shape the rest of the importer reads."""
+    answer = _as_dict(item.get("answer")) or {}
+    out: dict = {"stem": _first(item, "prompt", "body", "stem"), "stimulus": _first(item, "stimulus", "passage")}
+    style = str(answer.get("style") or item.get("style") or "").lower()
+    choices = _as_dict(answer.get("choices")) or {}
+    flagged = []
+    if choices:
+        options = []
+        for label, choice in choices.items():
+            if isinstance(choice, dict):
+                options.append({"id": label, "content": _first(choice, "body", "content", "text") or ""})
+                if any(choice.get(f) is True for f in LEGACY_CORRECT_FLAGS):
+                    flagged.append(str(label))
+            else:
+                options.append({"id": label, "content": str(choice)})
+        out["answerOptions"] = options
+    numeric = bool(style) and "multiple" not in style
+    out["type"] = "spr" if numeric or not choices else "mcq"
+    key = flagged or next((answer[f] for f in LEGACY_KEY_FIELDS if answer.get(f) not in (None, "", [])), None)
+    if key is None:
+        key = next((item[f] for f in LEGACY_KEY_FIELDS if item.get(f) not in (None, "", [])), None)
+    out["correct_answer"] = key
+    out["rationale"] = (next((answer[f] for f in LEGACY_RATIONALE_FIELDS if answer.get(f)), None)
+                        or next((item[f] for f in LEGACY_RATIONALE_FIELDS if item.get(f)), None))
+    return out
+
+
 def flatten(rec: dict) -> dict:
     """Real exports keep question content under `detail` (a dict or a JSON string) and metadata at the
     top level. Merge them; top-level metadata wins on conflicts."""
     detail = rec.get("detail")
+    if isinstance(detail, list) and detail and isinstance(detail[0], dict):
+        detail = legacy_to_modern(detail[0])
     if isinstance(detail, str):
         try:
             detail = json.loads(detail)
@@ -131,6 +180,7 @@ class ImportReport:
     verified: int = 0
     check_failures: dict[str, int] = field(default_factory=dict)
     detail_keys: dict[str, int] = field(default_factory=dict)
+    legacy_keys: dict[str, int] = field(default_factory=dict)
     aborted: str | None = None
 
 
@@ -240,6 +290,12 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
         report.seen += 1
         try:
             rec = json.loads(line)
+            if isinstance(rec, dict) and isinstance(rec.get("detail"), list) and rec["detail"] and isinstance(rec["detail"][0], dict):
+                first = rec["detail"][0]
+                for k in first:
+                    report.legacy_keys[f"item.{k}"] = report.legacy_keys.get(f"item.{k}", 0) + 1
+                for k in (_as_dict(first.get("answer")) or {}):
+                    report.legacy_keys[f"answer.{k}"] = report.legacy_keys.get(f"answer.{k}", 0) + 1
             for key in (flatten(rec) if isinstance(rec, dict) and isinstance(rec.get("detail"), (dict, str)) else {}):
                 if key not in rec:
                     report.detail_keys[key] = report.detail_keys.get(key, 0) + 1
@@ -295,7 +351,8 @@ def main(argv=None):
     print(json.dumps({"seen": report.seen, "created": report.created, "updated": report.updated, "verified": report.verified,
                       "duplicates": report.duplicates, "rejected": len(report.rejected),
                       "check_failures": report.check_failures, "unmatched_skills": report.unmatched_skills,
-                      "content_fields": report.detail_keys}))
+                      "content_fields": report.detail_keys,
+                      "legacy_fields": report.legacy_keys}))
     for lineno, why in report.rejected[:20]:
         print(f"line {lineno}: {why}")
     if report.aborted:

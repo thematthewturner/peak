@@ -229,3 +229,64 @@ def test_attempted_item_keeps_content_and_key(db, tmp_path):
     item = db.scalar(select(Item))
     assert json.loads(item.key) == ["B"] and "Choice B" in item.rationale  # unchanged under attempts
     assert item.family_id == "qb:CL3"  # but the missing family is filled in
+
+
+def legacy(qid="leg1", answer=None, **item):
+    a = {"style": "Multiple Choice",
+         "choices": {"a": {"body": '<p class="choice_paragraph ">2</p>\n'}, "b": {"body": "<p>3</p>"},
+                     "c": {"body": "<p>4</p>"}, "d": {"body": "<p>5</p>"}},
+         "correct_choice": "b", "rationale": "<p>Because 3.</p>"}
+    a.update(answer or {})
+    it = {"item_id": "022222-DC", "section": "Math", "prompt": '<p class="stem_paragraph ">A helicopter delivers packages. How many?</p>',
+          "answer": a}
+    it.update(item)
+    return {"questionId": qid, "skill_desc": "Linear inequalities in one or two variables",
+            "primary_class_cd_desc": "Algebra", "difficulty": "M", "ibn": "022222-DC", "external_id": "None",
+            "section": "Math", "detail": [it]}
+
+
+def test_legacy_list_shape_multiple_choice(db, tmp_path):
+    seed_skills(db)
+    rep = import_jsonl(db, write(tmp_path, legacy()))
+    item = db.scalar(select(Item))
+    assert rep.verified == 1 and item.status == "verified" and item.format == "mc"
+    assert list(json.loads(item.content)["choices"]) == ["A", "B", "C", "D"]
+    assert json.loads(item.key) == ["B"] and "Because 3" in item.rationale
+    assert item.skill_id == "algebra.linear-inequalities-in-one-or-two-variables"
+    assert rep.legacy_keys["answer.correct_choice"] == 1 and rep.legacy_keys["item.prompt"] == 1
+
+
+def test_legacy_body_field_for_stem_and_per_choice_correct_flag(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg2", answer={"correct_choice": None, "choices": {
+        "a": {"body": "<p>x</p>"}, "b": {"body": "<p>y</p>", "correct": True}, "c": {"body": "<p>z</p>"}, "d": {"body": "<p>w</p>"}}})
+    rec["detail"][0].pop("prompt")
+    rec["detail"][0]["body"] = "<div>Stem in body</div>"
+    import_jsonl(db, write(tmp_path, rec))
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and json.loads(item.key) == ["B"] and "Stem in body" in item.content
+
+
+def test_legacy_answer_as_python_repr_string(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg3")
+    rec["detail"][0]["answer"] = str(rec["detail"][0]["answer"])  # str(dict) with single quotes
+    import_jsonl(db, write(tmp_path, rec))
+    assert db.scalar(select(Item)).status == "verified"
+
+
+def test_legacy_numeric_style(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg4", answer={"style": "Student-Produced Response", "choices": None, "correct_choice": None,
+                                 "correct_answer": "3/2"})
+    import_jsonl(db, write(tmp_path, rec))
+    item = db.scalar(select(Item))
+    assert item.format == "numeric" and json.loads(item.key) == ["3/2"] and item.status == "verified"
+
+
+def test_legacy_with_unknown_key_field_is_held_and_visible(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg5", answer={"correct_choice": None, "mystery_field": "b"})
+    rep = import_jsonl(db, write(tmp_path, rec))
+    assert db.scalar(select(Item)).status == "review" and rep.check_failures.get("key_present") == 1
+    assert "answer.mystery_field" in rep.legacy_keys  # the report tells us what the real field is called
