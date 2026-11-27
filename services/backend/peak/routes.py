@@ -52,6 +52,9 @@ def create_attempt(body: AttemptIn, user=Depends(authenticate), db=Depends(get_d
     except svc.AttemptError as error:
         raise HTTPException(error.status, str(error)) from None
     timed = bool(session and session.mode == "timed")
+    if created:
+        from . import ticket_service  # evidence for any awaiting ticket on this skill
+        ticket_service.apply_attempt(db, attempt, item)
     return {"created": created, **svc.review(db, attempt, item, timed=timed)}
 
 
@@ -74,3 +77,87 @@ def list_attempts(user=Depends(authenticate), db=Depends(get_db), limit: int = 5
          "elapsed_ms": a.elapsed_ms, "created": a.created}
         for a in rows
     ]
+
+
+# ---- review, tickets ------------------------------------------------------------------------
+from datetime import date  # noqa: E402
+
+from . import ticket_service as tsvc  # noqa: E402
+from .models import Ticket  # noqa: E402
+from .taxonomy import Cause  # noqa: E402
+
+
+class DiagnoseIn(BaseModel):
+    cold_retry_correct: bool | None = None
+    requested_quantity_flag: bool = False
+
+
+@router.post("/attempts/{attempt_id}/diagnose")
+def diagnose_attempt(attempt_id: str, body: DiagnoseIn, user=Depends(authenticate), db=Depends(get_db)):
+    attempt = db.get(Attempt, attempt_id)
+    if not attempt or attempt.user_id != user.id:
+        raise HTTPException(404, "Attempt not found")
+    d = tsvc.propose(db, attempt, db.get(Item, attempt.item_id), cold_retry_correct=body.cold_retry_correct,
+                     requested_quantity_flag=body.requested_quantity_flag)
+    db.commit()
+    return {"kind": d.kind, "cause": d.cause.value if d.cause else None, "ticket_required": d.ticket_required,
+            "mastery_credit": d.mastery_credit, "reverify_days": list(d.reverify_days), "reasons": list(d.reasons)}
+
+
+class TicketIn(BaseModel):
+    cause: str
+    micro_skill: str | None = None
+
+
+@router.post("/attempts/{attempt_id}/ticket")
+def create_ticket(attempt_id: str, body: TicketIn, user=Depends(authenticate), db=Depends(get_db)):
+    attempt = db.get(Attempt, attempt_id)
+    if not attempt or attempt.user_id != user.id:
+        raise HTTPException(404, "Attempt not found")
+    try:
+        cause = Cause(body.cause)
+        ticket = tsvc.open_ticket(db, attempt, db.get(Item, attempt.item_id), cause, body.micro_skill)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    return _ticket(ticket)
+
+
+def _ticket(t: Ticket) -> dict:
+    return {"id": t.id, "skill_id": t.skill_id, "cause": t.cause, "micro_skill": t.micro_skill, "cue": t.cue,
+            "state": t.state, "next_due": t.next_due, "reopen_reason": t.reopen_reason,
+            "intervention": t.intervention}
+
+
+def _own_ticket(db, user, ticket_id) -> Ticket:
+    t = db.get(Ticket, ticket_id)
+    if not t or t.user_id != user.id:
+        raise HTTPException(404, "Ticket not found")
+    return t
+
+
+@router.get("/tickets")
+def list_tickets(user=Depends(authenticate), db=Depends(get_db)):
+    rows = db.scalars(select(Ticket).where(Ticket.user_id == user.id).order_by(Ticket.created.desc())).all()
+    return [_ticket(t) for t in rows]
+
+
+class RepairIn(BaseModel):
+    intervention: str = Field(min_length=1, max_length=60)
+
+
+@router.post("/tickets/{ticket_id}/repair/start")
+def repair_start(ticket_id: str, body: RepairIn, user=Depends(authenticate), db=Depends(get_db)):
+    t = _own_ticket(db, user, ticket_id)
+    try:
+        return _ticket(tsvc.start_repair(db, t, body.intervention))
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+
+
+@router.post("/tickets/{ticket_id}/repair/complete")
+def repair_complete(ticket_id: str, user=Depends(authenticate), db=Depends(get_db)):
+    t = _own_ticket(db, user, ticket_id)
+    try:
+        return _ticket(tsvc.complete_repair(db, t, date.today()))
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
