@@ -164,3 +164,68 @@ def test_numeric_nested_record(db, tmp_path):
     import_jsonl(db, write(tmp_path, rec))
     item = db.scalar(select(Item))
     assert item.format == "numeric" and item.status == "verified" and item.difficulty == "easy"
+
+
+def test_family_from_template_fields(db, tmp_path):
+    seed_skills(db)
+    recs = [nested("c1", templateclusterid="CL9", parenttemplateid="P1"),
+            nested("p1", parenttemplateid="P1"),
+            nested("t1", templateid="T7"),
+            nested("n1")]
+    import_jsonl(db, write(tmp_path, *recs))
+    fam = {i.source_ref: i.family_id for i in db.scalars(select(Item))}
+    assert fam == {"c1": "qb:CL9", "p1": "qb:P1", "t1": "qb:T7", "n1": None}
+
+
+def test_refetch_fills_in_missing_content_in_place(db, tmp_path):
+    seed_skills(db)
+    stub = {k: v for k, v in nested("miss1").items() if k != "detail"}  # crawler failed: metadata only
+    first = import_jsonl(db, write(tmp_path, stub, name="a.jsonl"))
+    item = db.scalar(select(Item))
+    assert item.status == "review" and first.verified == 0
+    again = import_jsonl(db, write(tmp_path, nested("miss1"), name="b.jsonl"))
+    db.expire_all()
+    item = db.scalar(select(Item))
+    assert again.updated == 1 and again.created == 0 and item.status == "verified"
+    assert len(db.scalars(select(Item)).all()) == 1 and item.version == 2
+
+
+def test_reprocess_same_file_backfills_family(db, tmp_path):
+    seed_skills(db)
+    p = write(tmp_path, nested("r1", templateclusterid="CL1"))
+    import_jsonl(db, p)
+    item = db.scalar(select(Item))
+    item.family_id = None
+    db.commit()
+    assert import_jsonl(db, p).duplicates == -1  # without the flag the file is skipped
+    rep = import_jsonl(db, p, reprocess=True)
+    db.expire_all()
+    assert rep.updated == 1 and db.scalar(select(Item)).family_id == "qb:CL1"
+
+
+def test_verified_item_is_never_downgraded_by_a_worse_export(db, tmp_path):
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested("keep"), name="a.jsonl"))
+    stub = {k: v for k, v in nested("keep").items() if k != "detail"}
+    import_jsonl(db, write(tmp_path, stub, name="b.jsonl"))
+    db.expire_all()
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and "Choice B" in item.rationale
+
+
+def test_attempted_item_keeps_content_and_key(db, tmp_path):
+    from peak.db import User
+    from peak.models import Attempt
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested("att"), name="a.jsonl"))
+    item = db.scalar(select(Item))
+    db.add(User(id="u1", username="u", password_hash="x", role="student"))
+    db.commit()
+    db.add(Attempt(user_id="u1", item_id=item.id, answer="A", correct=False, idempotency_key="k-1"))
+    db.commit()
+    changed = nested("att", detail={"correct_answer": ["D"], "rationale": "different"}, templateclusterid="CL3")
+    import_jsonl(db, write(tmp_path, changed, name="b.jsonl"))
+    db.expire_all()
+    item = db.scalar(select(Item))
+    assert json.loads(item.key) == ["B"] and "Choice B" in item.rationale  # unchanged under attempts
+    assert item.family_id == "qb:CL3"  # but the missing family is filled in

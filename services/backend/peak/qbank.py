@@ -13,9 +13,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from .models import Item, ItemCheck, SourceDocument
+from .models import Attempt, Item, ItemCheck, SourceDocument
 from .sanitize import sanitize_html
 from .taxonomy import DOMAINS, OFFICIAL_SKILLS, skill_id
 
@@ -124,6 +124,7 @@ def parse_keys(raw) -> list[str]:
 class ImportReport:
     seen: int = 0
     created: int = 0
+    updated: int = 0
     duplicates: int = 0
     rejected: list[tuple[int, str]] = field(default_factory=list)
     unmatched_skills: dict[str, int] = field(default_factory=dict)
@@ -160,8 +161,11 @@ def to_item(rec: dict, *, source_document_id: str | None, benchmark_locked: bool
     diff = DIFFICULTY.get(str(_first(rec, "difficulty", "difficulty_level") or "").strip().lower())
     rationale = sanitize_html(str(_first(rec, "rationale", "explanation") or "")) or None
     content = {"stem": stem, "passage": passage or None, "choices": options, "format": "html", "needs_figure": needs_figure}
+    # Items generated from one template/cluster share a family: a repair is only proven on a different one.
+    fam = next((str(rec[k]) for k in ("templateclusterid", "parenttemplateid", "templateid")
+                if rec.get(k) not in (None, "", "None")), None)
     item = Item(
-        origin="official", source_ref=str(ref), source_document_id=source_document_id, skill_id=sid,
+        origin="official", source_ref=str(ref), family_id=f"qb:{fam}" if fam else None, source_document_id=source_document_id, skill_id=sid,
         difficulty=diff, format=fmt, benchmark_locked=benchmark_locked, status="draft",
         rights="private_official", content=json.dumps(content), key=json.dumps(keys), rationale=rationale,
     )
@@ -174,17 +178,56 @@ def to_item(rec: dict, *, source_document_id: str | None, benchmark_locked: bool
     return item, checks
 
 
+def _record_checks(db, item, checks, report) -> None:
+    for name, passed, detail in checks:
+        db.add(ItemCheck(item_id=item.id, check=name, passed=passed, detail=json.dumps({"detail": detail})))
+        if not passed:
+            report.check_failures[name] = report.check_failures.get(name, 0) + 1
+    # Skill match is advisory (can be fixed in review); schema, key and figure are gating.
+    item.status = "verified" if all(p for n, p, _ in checks if n != "skill_known") else "review"
+
+
+def _refresh(db, existing, fresh, checks, report) -> bool:
+    """Re-import of a known Question ID. Returns True if the stored item changed.
+
+    A re-fetched export can fill in content that was missing, and an improved importer can add
+    metadata. An item a student has already attempted keeps its content and key (attempts reference
+    them); only a missing family id is filled in."""
+    attempted = db.scalar(select(func.count()).select_from(Attempt).where(Attempt.item_id == existing.id))
+    if attempted:
+        if existing.family_id is None and fresh.family_id:
+            existing.family_id = fresh.family_id
+            return True
+        return False
+    fresh_ok = all(passed for name, passed, _ in checks if name != "skill_known")
+    if existing.status == "verified" and not fresh_ok:
+        return False  # never let a worse export downgrade a verified item
+    fields = ("skill_id", "family_id", "difficulty", "format", "benchmark_locked", "content", "key", "rationale")
+    changed = any(getattr(existing, f) != getattr(fresh, f) for f in fields)
+    if not changed:
+        return False
+    if (existing.content, existing.key) != (fresh.content, fresh.key):
+        existing.version += 1
+    for f in fields:
+        setattr(existing, f, getattr(fresh, f))
+    db.query(ItemCheck).filter(ItemCheck.item_id == existing.id).delete()
+    _record_checks(db, existing, checks, report)
+    report.verified += existing.status == "verified"
+    return True
+
+
 MIN_USABLE_RATIO = 0.5  # below this, the export shape is not understood: abort instead of reporting success
 
 
 def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_locked: bool = False,
-                 export_filter: dict | None = None, min_usable_ratio: float = MIN_USABLE_RATIO) -> ImportReport:
+                 export_filter: dict | None = None, min_usable_ratio: float = MIN_USABLE_RATIO,
+                 reprocess: bool = False) -> ImportReport:
     path = Path(path)
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     doc = db.scalar(select(SourceDocument).where(SourceDocument.sha256 == digest))
     report = ImportReport()
-    if doc and doc.status == "published":
+    if doc and doc.status == "published" and not reprocess:
         report.duplicates = -1  # whole file already ingested: re-upload is a no-op
         return report
     if not doc:
@@ -204,27 +247,27 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
         except (ValueError, json.JSONDecodeError, TypeError) as error:
             report.rejected.append((lineno, str(error)[:120]))
             continue
-        if db.scalar(select(Item.id).where(Item.origin == "official", Item.source_ref == item.source_ref)):
-            report.duplicates += 1
+        existing = db.scalar(select(Item).where(Item.origin == "official", Item.source_ref == item.source_ref))
+        if existing is not None:
+            if _refresh(db, existing, item, checks, report):
+                report.updated += 1
+            else:
+                report.duplicates += 1
             continue
         if item.skill_id is None:
             name = str(_first(rec, "skill_desc", "skill", "skill_name") or "?")
             report.unmatched_skills[name] = report.unmatched_skills.get(name, 0) + 1
         db.add(item)
         db.flush()
-        for name, passed, detail in checks:
-            db.add(ItemCheck(item_id=item.id, check=name, passed=passed, detail=json.dumps({"detail": detail})))
-            if not passed:
-                report.check_failures[name] = report.check_failures.get(name, 0) + 1
-        # Skill match is advisory (can be fixed in review); schema, key and figure are gating.
-        item.status = "verified" if all(p for n, p, _ in checks if n != "skill_known") else "review"
+        _record_checks(db, item, checks, report)
         report.verified += item.status == "verified"
         report.created += 1
-    if report.created >= 10 and report.verified / report.created < min_usable_ratio:
+    processed = report.created + report.updated
+    if processed >= 10 and report.verified / processed < min_usable_ratio:
         # Most items unusable means the export shape was misread. Do not publish half-garbage.
         db.rollback()
         report.aborted = (
-            f"only {report.verified}/{report.created} items passed checks; the export format is not understood. "
+            f"only {report.verified}/{processed} items passed checks; the export format is not understood. "
             f"failed checks: {report.check_failures}; content fields seen: {sorted(report.detail_keys)}"
         )
         return report
@@ -243,11 +286,13 @@ def main(argv=None):
     parser.add_argument("path")
     parser.add_argument("--kind", default="qbank_export")
     parser.add_argument("--benchmark-locked", action="store_true")
+    parser.add_argument("--reprocess", action="store_true",
+                        help="re-run an already imported file (e.g. after an importer upgrade); updates items in place")
     args = parser.parse_args(argv)
     with SessionLocal() as db:
         seed_skills(db)
-        report = import_jsonl(db, args.path, kind=args.kind, benchmark_locked=args.benchmark_locked)
-    print(json.dumps({"seen": report.seen, "created": report.created, "verified": report.verified,
+        report = import_jsonl(db, args.path, kind=args.kind, benchmark_locked=args.benchmark_locked, reprocess=args.reprocess)
+    print(json.dumps({"seen": report.seen, "created": report.created, "updated": report.updated, "verified": report.verified,
                       "duplicates": report.duplicates, "rejected": len(report.rejected),
                       "check_failures": report.check_failures, "unmatched_skills": report.unmatched_skills,
                       "content_fields": report.detail_keys}))
