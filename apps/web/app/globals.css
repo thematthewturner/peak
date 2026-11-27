@@ -56,3 +56,4 @@ input[type="text"], input[type="password"], select { border: 1px solid var(--lin
 @media (max-width: 480px) { .shell { padding: 12px; } }
 /* Equation and figure images come inline from the item bank: keep them on the text baseline. */
 .stem img, .choice img, .card img { max-width: 100%; height: auto; vertical-align: middle; }
+.stem svg, .choice svg, .card svg { max-width: 100%; height: auto; }

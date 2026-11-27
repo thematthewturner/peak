@@ -318,7 +318,7 @@ def test_inline_png_images_are_kept_and_do_not_hold_the_item(db, tmp_path):
 def test_remote_svg_and_object_figures_are_held(db, tmp_path):
     seed_skills(db)
     recs = [nested("f1", detail={"stem": '<p>x</p><img src="https://cdn.example/a.png">'}),
-            nested("f2", detail={"stem": '<p>x</p><svg><circle/></svg>'}),
+            nested("f2", detail={"stem": '<p>x</p><object data="x.svg"></object>'}),
             nested("f3", detail={"stem": '<p>x</p><img src="data:image/svg+xml;base64,PHN2Zz4=">'}),
             nested("f4", detail={"stem": '<p>x</p><img alt="no src">'})]
     rep = import_jsonl(db, write(tmp_path, *recs))
@@ -335,3 +335,21 @@ def test_reprocess_re_evaluates_a_stale_status_even_when_content_is_unchanged(db
     rep = import_jsonl(db, p, reprocess=True)
     db.expire_all()
     assert rep.updated == 1 and db.scalar(select(Item)).status == "verified"
+
+
+def test_inline_svg_chart_is_kept_and_does_not_hold_the_item(db, tmp_path):
+    seed_skills(db)
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100" role="img" '
+           'aria-label="Scatterplot"><rect width="200" height="100" fill="white"/><circle cx="50" cy="50" r="4"/></svg>')
+    rep = import_jsonl(db, write(tmp_path, nested("svg1", detail={"stem": f"<p>Use the graph.</p>{svg}"})))
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and rep.check_failures == {}
+    assert "<svg" in item.content and 'aria-label=\\"Scatterplot\\"' in item.content or "Scatterplot" in item.content
+
+
+def test_hold_reasons_are_reported_even_for_unchanged_items(db, tmp_path):
+    seed_skills(db)
+    p = write(tmp_path, nested("h1", detail={"stem": '<p>x</p><object data="x"></object>'}))
+    import_jsonl(db, p)
+    again = import_jsonl(db, p, reprocess=True)  # nothing changes, but the hold must still be visible
+    assert again.updated == 0 and again.check_failures == {"figure": 1}

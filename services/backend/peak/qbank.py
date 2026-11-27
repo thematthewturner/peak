@@ -187,7 +187,7 @@ class ImportReport:
 
 IMG_TAG = re.compile(r"<\s*img\b[^>]*>", re.I)
 IMG_SRC = re.compile(r"""\bsrc\s*=\s*(["'])(.*?)\1""", re.I | re.S)
-ACTIVE = re.compile(r"<\s*(svg|object|embed|iframe)\b", re.I)
+ACTIVE = re.compile(r"<\s*(object|embed|iframe)\b", re.I)
 
 
 def _strings(obj):
@@ -229,6 +229,10 @@ def to_item(rec: dict, *, source_document_id: str | None, benchmark_locked: bool
     # Images/SVG are not stored yet (figures must be private assets, PRD s8.3), so an item that needs
     # one would render incomplete. Flag it and hold it out of service rather than serve a broken question.
     needs_figure = needs_unstored_figure(raw_stem, raw_passage, *_strings(raw_options))
+    # An inline SVG is kept by the sanitizer; if sanitizing removed it entirely the figure is lost: hold.
+    raw_all = (raw_stem + raw_passage + " ".join(_strings(raw_options))).lower()
+    clean_all = (stem + passage + " ".join((options or {}).values())).lower()
+    needs_figure = needs_figure or ("<svg" in raw_all and "<svg" not in clean_all)
     keys = parse_keys(_first(rec, "correct_answer", "correctAnswer", "keys", "answer", "correct"))
     if options:  # a key may be given as an option id rather than a letter
         keys = [idmap.get(k, k.upper() if k.upper() in options else k) for k in keys]
@@ -259,8 +263,6 @@ def to_item(rec: dict, *, source_document_id: str | None, benchmark_locked: bool
 def _record_checks(db, item, checks, report) -> None:
     for name, passed, detail in checks:
         db.add(ItemCheck(item_id=item.id, check=name, passed=passed, detail=json.dumps({"detail": detail})))
-        if not passed:
-            report.check_failures[name] = report.check_failures.get(name, 0) + 1
     # Skill match is advisory (can be fixed in review); schema, key and figure are gating.
     item.status = "verified" if all(p for n, p, _ in checks if n != "skill_known") else "review"
     report.understood += all(p for n, p, _ in checks if n in ("schema", "key_present"))
@@ -335,6 +337,9 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
         except (ValueError, json.JSONDecodeError, TypeError) as error:
             report.rejected.append((lineno, str(error)[:120]))
             continue
+        for name, passed, _ in checks:  # report every item's failures, changed or not, so holds are never hidden
+            if not passed and name != "skill_known":
+                report.check_failures[name] = report.check_failures.get(name, 0) + 1
         existing = db.scalar(select(Item).where(Item.origin == "official", Item.source_ref == item.source_ref))
         if existing is not None:
             if _refresh(db, existing, item, checks, report):
