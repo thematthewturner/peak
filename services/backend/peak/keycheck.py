@@ -24,7 +24,7 @@ from sqlalchemy import select
 
 from . import config, logs, provider_keys
 from .db import SessionLocal
-from .mathtext import plain, to_blocks
+from .mathtext import to_blocks
 from .models import Item, ItemCheck, Skill
 from .provider_usage import ProviderBudgetFailure, model_rates, new_call, parse_with_receipt
 
