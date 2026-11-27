@@ -10,7 +10,7 @@ Peak makes **no model calls at runtime**, so it needs no Anthropic key to go liv
 ## 0. Before you touch anything
 - [ ] DigitalOcean: **snapshot the Droplet** (this is your rollback for everything below).
 - [ ] Resize to 2 vCPU / 4 GB if it is smaller (a short power-off). Add 2 GB swap.
-- [ ] Cloudflare: `peak` A record to the Droplet IP, DNS-only (grey cloud) for the first certificate.
+- [ ] Cloudflare: add an `A` record `peak` -> `134.209.209.174` (the same address as `belay`), **DNS only (grey cloud), and keep it that way**.
 
 ## 1. Host preparation (SSH to the Droplet)
 ```bash
@@ -67,7 +67,8 @@ Expect about 4,105 `verified`. Optionally run the key check (see `docs/DATA.md`;
    `infra/restore-drill.sh` against that snapshot. **Do not skip the restore drill.**
 2. Deploy automation: repo secrets `PEAK_OPS_SSH_KEY`, `PEAK_OPS_KNOWN_HOSTS`, `PEAK_OPS_HOST`, `PEAK_OPS_USER`;
    a `production` environment with you as required reviewer; install `infra/ops-entry.sh` as the forced command.
-3. Flip Cloudflare to proxied (orange cloud) with SSL mode **Full (strict)** once the certificate is issued.
+3. Leave Cloudflare on **DNS only**. Proxying would make every visitor appear to Peak as a Cloudflare address, so the per-IP
+   login throttle would lock out unrelated users together (it can be revisited by configuring Caddy's trusted proxies).
 
 ## Rollback
 - **Peak misbehaves:** `docker compose -p peak down` (Belay is unaffected), or just remove the `peak.mturner.work`
@@ -78,6 +79,6 @@ Expect about 4,105 `verified`. Optionally run the key check (see `docs/DATA.md`;
 ## Known risks
 - Step 2 restarts Belay's proxy (brief Belay outage) and is the only step that touches the existing site.
 - A shared 4 GB host: ingestion and key checks should run off-hours, and an alert on memory is worth adding.
-- Let's Encrypt rate limits: leave Cloudflare DNS-only until the first certificate is issued.
+- Let's Encrypt: Caddy requests the certificate on the first request after DNS resolves; if it fails, check the A record and that ports 80/443 reach Belay's Caddy.
 - No CI run has exercised `deploy.sh`, the backup scripts or the Docker builds on a real host. Expect to fix a
   small thing or two on the first pass, and do it with the snapshot in hand.
