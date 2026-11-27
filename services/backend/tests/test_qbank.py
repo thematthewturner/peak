@@ -164,3 +164,221 @@ def test_numeric_nested_record(db, tmp_path):
     import_jsonl(db, write(tmp_path, rec))
     item = db.scalar(select(Item))
     assert item.format == "numeric" and item.status == "verified" and item.difficulty == "easy"
+
+
+def test_family_from_template_fields(db, tmp_path):
+    seed_skills(db)
+    recs = [nested("c1", templateclusterid="CL9", parenttemplateid="P1"),
+            nested("p1", parenttemplateid="P1"),
+            nested("t1", templateid="T7"),
+            nested("n1")]
+    import_jsonl(db, write(tmp_path, *recs))
+    fam = {i.source_ref: i.family_id for i in db.scalars(select(Item))}
+    assert fam == {"c1": "qb:CL9", "p1": "qb:P1", "t1": "qb:T7", "n1": None}
+
+
+def test_refetch_fills_in_missing_content_in_place(db, tmp_path):
+    seed_skills(db)
+    stub = {k: v for k, v in nested("miss1").items() if k != "detail"}  # crawler failed: metadata only
+    first = import_jsonl(db, write(tmp_path, stub, name="a.jsonl"))
+    item = db.scalar(select(Item))
+    assert item.status == "review" and first.verified == 0
+    again = import_jsonl(db, write(tmp_path, nested("miss1"), name="b.jsonl"))
+    db.expire_all()
+    item = db.scalar(select(Item))
+    assert again.updated == 1 and again.created == 0 and item.status == "verified"
+    assert len(db.scalars(select(Item)).all()) == 1 and item.version == 2
+
+
+def test_reprocess_same_file_backfills_family(db, tmp_path):
+    seed_skills(db)
+    p = write(tmp_path, nested("r1", templateclusterid="CL1"))
+    import_jsonl(db, p)
+    item = db.scalar(select(Item))
+    item.family_id = None
+    db.commit()
+    assert import_jsonl(db, p).duplicates == -1  # without the flag the file is skipped
+    rep = import_jsonl(db, p, reprocess=True)
+    db.expire_all()
+    assert rep.updated == 1 and db.scalar(select(Item)).family_id == "qb:CL1"
+
+
+def test_verified_item_is_never_downgraded_by_a_worse_export(db, tmp_path):
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested("keep"), name="a.jsonl"))
+    stub = {k: v for k, v in nested("keep").items() if k != "detail"}
+    import_jsonl(db, write(tmp_path, stub, name="b.jsonl"))
+    db.expire_all()
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and "Choice B" in item.rationale
+
+
+def test_attempted_item_keeps_content_and_key(db, tmp_path):
+    from peak.db import User
+    from peak.models import Attempt
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested("att"), name="a.jsonl"))
+    item = db.scalar(select(Item))
+    db.add(User(id="u1", username="u", password_hash="x", role="student"))
+    db.commit()
+    db.add(Attempt(user_id="u1", item_id=item.id, answer="A", correct=False, idempotency_key="k-1"))
+    db.commit()
+    changed = nested("att", detail={"correct_answer": ["D"], "rationale": "different"}, templateclusterid="CL3")
+    import_jsonl(db, write(tmp_path, changed, name="b.jsonl"))
+    db.expire_all()
+    item = db.scalar(select(Item))
+    assert json.loads(item.key) == ["B"] and "Choice B" in item.rationale  # unchanged under attempts
+    assert item.family_id == "qb:CL3"  # but the missing family is filled in
+
+
+def legacy(qid="leg1", answer=None, **item):
+    a = {"style": "Multiple Choice",
+         "choices": {"a": {"body": '<p class="choice_paragraph ">2</p>\n'}, "b": {"body": "<p>3</p>"},
+                     "c": {"body": "<p>4</p>"}, "d": {"body": "<p>5</p>"}},
+         "correct_choice": "b", "rationale": "<p>Because 3.</p>"}
+    a.update(answer or {})
+    it = {"item_id": "022222-DC", "section": "Math", "prompt": '<p class="stem_paragraph ">A helicopter delivers packages. How many?</p>',
+          "answer": a}
+    it.update(item)
+    return {"questionId": qid, "skill_desc": "Linear inequalities in one or two variables",
+            "primary_class_cd_desc": "Algebra", "difficulty": "M", "ibn": "022222-DC", "external_id": "None",
+            "section": "Math", "detail": [it]}
+
+
+def test_legacy_list_shape_multiple_choice(db, tmp_path):
+    seed_skills(db)
+    rep = import_jsonl(db, write(tmp_path, legacy()))
+    item = db.scalar(select(Item))
+    assert rep.verified == 1 and item.status == "verified" and item.format == "mc"
+    assert list(json.loads(item.content)["choices"]) == ["A", "B", "C", "D"]
+    assert json.loads(item.key) == ["B"] and "Because 3" in item.rationale
+    assert item.skill_id == "algebra.linear-inequalities-in-one-or-two-variables"
+    assert rep.legacy_keys["answer.correct_choice"] == 1 and rep.legacy_keys["item.prompt"] == 1
+
+
+def test_legacy_body_field_for_stem_and_per_choice_correct_flag(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg2", answer={"correct_choice": None, "choices": {
+        "a": {"body": "<p>x</p>"}, "b": {"body": "<p>y</p>", "correct": True}, "c": {"body": "<p>z</p>"}, "d": {"body": "<p>w</p>"}}})
+    rec["detail"][0].pop("prompt")
+    rec["detail"][0]["body"] = "<div>Stem in body</div>"
+    import_jsonl(db, write(tmp_path, rec))
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and json.loads(item.key) == ["B"] and "Stem in body" in item.content
+
+
+def test_legacy_answer_as_python_repr_string(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg3")
+    rec["detail"][0]["answer"] = str(rec["detail"][0]["answer"])  # str(dict) with single quotes
+    import_jsonl(db, write(tmp_path, rec))
+    assert db.scalar(select(Item)).status == "verified"
+
+
+def test_legacy_numeric_style(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg4", answer={"style": "Student-Produced Response", "choices": None, "correct_choice": None,
+                                 "correct_answer": "3/2"})
+    import_jsonl(db, write(tmp_path, rec))
+    item = db.scalar(select(Item))
+    assert item.format == "numeric" and json.loads(item.key) == ["3/2"] and item.status == "verified"
+
+
+def test_legacy_with_unknown_key_field_is_held_and_visible(db, tmp_path):
+    seed_skills(db)
+    rec = legacy("leg5", answer={"correct_choice": None, "mystery_field": "b"})
+    rep = import_jsonl(db, write(tmp_path, rec))
+    assert db.scalar(select(Item)).status == "review" and rep.check_failures.get("key_present") == 1
+    assert "answer.mystery_field" in rep.legacy_keys  # the report tells us what the real field is called
+
+
+def test_figure_held_items_do_not_trigger_the_abort_guard(db, tmp_path):
+    seed_skills(db)
+    figs = [nested(f"fg{i}", detail={"stem": f'<p>See graph {i}.</p><img src="https://cdn.example/{i}.png">'}) for i in range(12)]
+    rep = import_jsonl(db, write(tmp_path, *figs))
+    assert rep.aborted is None and rep.understood == 12 and rep.verified == 0
+    assert {i.status for i in db.scalars(select(Item))} == {"review"}  # held, but saved and counted
+
+
+PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHn3o4wAAAABJRU5ErkJggg=="
+
+
+def test_inline_png_images_are_kept_and_do_not_hold_the_item(db, tmp_path):
+    seed_skills(db)
+    rec = nested("img1", detail={
+        "stem": f'<p>Evaluate <img src="{PNG}" alt="x squared"> now.</p>',
+        "answerOptions": [{"id": "a", "content": f'<img src="{PNG}">'}, {"id": "b", "content": "2"},
+                          {"id": "c", "content": "3"}, {"id": "d", "content": "4"}]})
+    rep = import_jsonl(db, write(tmp_path, rec))
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and not rep.check_failures
+    assert "data:image/png;base64" in item.content  # the image survived sanitization
+
+
+def test_remote_svg_and_object_figures_are_held(db, tmp_path):
+    seed_skills(db)
+    recs = [nested("f1", detail={"stem": '<p>x</p><img src="https://cdn.example/a.png">'}),
+            nested("f2", detail={"stem": '<p>x</p><object data="x.svg"></object>'}),
+            nested("f3", detail={"stem": '<p>x</p><img src="data:image/svg+xml;base64,PHN2Zz4=">'}),
+            nested("f4", detail={"stem": '<p>x</p><img alt="no src">'})]
+    rep = import_jsonl(db, write(tmp_path, *recs))
+    assert rep.check_failures == {"figure": 4} and rep.verified == 0
+
+
+def test_reprocess_re_evaluates_a_stale_status_even_when_content_is_unchanged(db, tmp_path):
+    seed_skills(db)
+    p = write(tmp_path, nested("stale"))
+    import_jsonl(db, p)
+    item = db.scalar(select(Item))
+    item.status = "review"  # e.g. held by an older, stricter rule; stored content already matches the export
+    db.commit()
+    rep = import_jsonl(db, p, reprocess=True)
+    db.expire_all()
+    assert rep.updated == 1 and db.scalar(select(Item)).status == "verified"
+
+
+def test_inline_svg_chart_is_kept_and_does_not_hold_the_item(db, tmp_path):
+    seed_skills(db)
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100" role="img" '
+           'aria-label="Scatterplot"><rect width="200" height="100" fill="white"/><circle cx="50" cy="50" r="4"/></svg>')
+    rep = import_jsonl(db, write(tmp_path, nested("svg1", detail={"stem": f"<p>Use the graph.</p>{svg}"})))
+    item = db.scalar(select(Item))
+    assert item.status == "verified" and rep.check_failures == {}
+    assert "<svg" in item.content and 'aria-label=\\"Scatterplot\\"' in item.content or "Scatterplot" in item.content
+
+
+def test_hold_reasons_are_reported_even_for_unchanged_items(db, tmp_path):
+    seed_skills(db)
+    p = write(tmp_path, nested("h1", detail={"stem": '<p>x</p><object data="x"></object>'}))
+    import_jsonl(db, p)
+    again = import_jsonl(db, p, reprocess=True)  # nothing changes, but the hold must still be visible
+    assert again.updated == 0 and again.check_failures == {"figure": 1}
+
+
+def test_reprocess_keeps_blind_solve_results_and_a_disputed_key_stays_pulled(db, tmp_path):
+    from peak.models import ItemCheck
+    seed_skills(db)
+    p = write(tmp_path, nested("disp"))
+    import_jsonl(db, p)
+    item = db.scalar(select(Item))
+    db.add(ItemCheck(item_id=item.id, check="blind_solve", passed=False, detail="{}"))
+    item.status = "review"
+    db.commit()
+    rep = import_jsonl(db, p, reprocess=True)
+    db.expire_all()
+    assert rep.updated == 0 and db.scalar(select(Item)).status == "review"
+    assert db.scalar(select(ItemCheck).where(ItemCheck.check == "blind_solve")) is not None
+
+
+def test_changed_key_discards_the_stale_blind_solve_and_reverifies(db, tmp_path):
+    from peak.models import ItemCheck
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested("chg"), name="a.jsonl"))
+    item = db.scalar(select(Item))
+    db.add(ItemCheck(item_id=item.id, check="blind_solve", passed=False, detail="{}"))
+    item.status = "review"
+    db.commit()
+    import_jsonl(db, write(tmp_path, nested("chg", detail={"correct_answer": ["C"]}), name="b.jsonl"))
+    db.expire_all()
+    assert db.scalar(select(Item)).status == "verified"
+    assert db.scalar(select(ItemCheck).where(ItemCheck.check == "blind_solve")) is None

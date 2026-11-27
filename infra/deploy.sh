@@ -45,14 +45,14 @@ running_image() {
   id=$("${compose[@]}" ps -q "$1" 2>/dev/null | head -n 1 || true)
   if [[ -n "$id" ]]; then docker inspect --format '{{.Config.Image}}' "$id" 2>/dev/null || true; fi
 }
-previous_backend=$(running_image api)
-previous_web=$(running_image web)
+previous_backend=$(running_image peak-api)
+previous_web=$(running_image peak-web)
 # Drain: the worker claims nothing new; running jobs get up to 10 minutes to finish.
-if [[ -n "$previous_backend" ]] && "${compose[@]}" exec -T api python -m peak.ops_report drain >/dev/null 2>&1; then
+if [[ -n "$previous_backend" ]] && "${compose[@]}" exec -T peak-api python -m peak.ops_report drain >/dev/null 2>&1; then
   echo 'Draining: waiting up to 10 minutes for running jobs to finish.'
   deadline=$((SECONDS + 600))
   while :; do
-    running=$("${compose[@]}" exec -T api python -m peak.ops_report running 2>/dev/null | tail -n 1 || true)
+    running=$("${compose[@]}" exec -T peak-api python -m peak.ops_report running 2>/dev/null | tail -n 1 || true)
     [[ "$running" =~ ^[0-9]+$ ]] || { echo 'WARNING: could not count running jobs; continuing.' >&2; break; }
     if (( running == 0 )); then echo 'Drained: no jobs running.'; break; fi
     if (( SECONDS >= deadline )); then echo "WARNING: drain timed out; $running running job(s) will be cut off." >&2; break; fi
@@ -61,17 +61,17 @@ if [[ -n "$previous_backend" ]] && "${compose[@]}" exec -T api python -m peak.op
 else
   echo 'Drain unavailable; continuing.' >&2
 fi
-"${compose[@]}" stop api worker web
+"${compose[@]}" stop peak-api worker peak-web
 "${compose[@]}" up -d --wait --wait-timeout 60 postgres
-db_revision() { "${compose[@]}" run --rm --no-deps api alembic current 2>/dev/null | awk 'NF {print $1}' | sort | tr '\n' ' '; }
+db_revision() { "${compose[@]}" run --rm --no-deps peak-api alembic current 2>/dev/null | awk 'NF {print $1}' | sort | tr '\n' ' '; }
 revision_before=$(db_revision)
-"${compose[@]}" run --rm --no-deps api alembic upgrade head
+"${compose[@]}" run --rm --no-deps peak-api alembic upgrade head
 revision_after=$(db_revision)
 "${compose[@]}" up -d --remove-orphans
 wait_ready() {
   local attempt
   for attempt in {1..30}; do
-    if "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/readiness',timeout=5)" >/dev/null 2>&1; then return 0; fi
+    if "${compose[@]}" exec -T peak-api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/readiness',timeout=5)" >/dev/null 2>&1; then return 0; fi
     sleep 2
   done
   return 1

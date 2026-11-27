@@ -12,9 +12,9 @@ def config():
     return {
         "name": "peak",
         "services": {
-            "api": {"image": img("peak-backend"), "environment": {"FORWARDED_ALLOW_IPS": "172.20.0.2"}, "networks": {"default": None, "edge": None}},
+            "peak-api": {"image": img("peak-backend"), "environment": {"FORWARDED_ALLOW_IPS": "172.20.0.2"}, "networks": {"default": None, "edge": None}},
             "worker": {"image": img("peak-backend"), "networks": {"default": None}},
-            "web": {"image": img("peak-web")},
+            "peak-web": {"image": img("peak-web")},
             "postgres": {"image": "postgres:17.9-bookworm", "networks": {"default": None}},
         },
     }
@@ -25,11 +25,12 @@ def test_valid_release():
 
 
 @pytest.mark.parametrize("mutate,msg", [
-    (lambda c: c["services"]["api"].update(image="x"), "GHCR"),
-    (lambda c: c["services"]["web"].update(ports=["80:80"]), "host port"),
-    (lambda c: c["services"]["api"]["environment"].clear(), "FORWARDED"),
+    (lambda c: c["services"]["peak-api"].update(image="x"), "GHCR"),
+    (lambda c: c["services"]["peak-web"].update(ports=["80:80"]), "host port"),
+    (lambda c: c["services"]["peak-api"]["environment"].clear(), "FORWARDED"),
     (lambda c: c["services"]["postgres"]["networks"].update(edge=None), "edge"),
     (lambda c: c.update(name="belay"), "project name"),
+    (lambda c: c["services"].update(api={"image": "x", "networks": {"edge": None}}), "not named peak"),
 ])
 def test_rejects_bad_config(mutate, msg):
     c = copy.deepcopy(config())
