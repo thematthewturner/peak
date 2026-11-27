@@ -321,8 +321,11 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
                  export_filter: dict | None = None, min_usable_ratio: float = MIN_USABLE_RATIO,
                  reprocess: bool = False) -> ImportReport:
     path = Path(path)
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
+    h = hashlib.sha256()
+    with path.open("rb") as stream:  # hash in chunks: the export can be hundreds of MB on a small host
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            h.update(chunk)
+    digest = h.hexdigest()
     doc = db.scalar(select(SourceDocument).where(SourceDocument.sha256 == digest))
     report = ImportReport()
     if doc and doc.status == "published" and not reprocess:
@@ -332,7 +335,8 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
         doc = SourceDocument(sha256=digest, kind=kind, path=str(path), export_filter_json=json.dumps(export_filter or {}))
         db.add(doc)
         db.flush()
-    for lineno, line in enumerate(data.decode("utf-8").splitlines(), 1):
+    lines = path.open(encoding="utf-8")
+    for lineno, line in enumerate(lines, 1):
         if not line.strip():
             continue
         report.seen += 1
@@ -369,6 +373,7 @@ def import_jsonl(db, path: str | Path, *, kind: str = "qbank_export", benchmark_
         _record_checks(db, item, checks, report)
         report.verified += item.status == "verified"
         report.created += 1
+    lines.close()
     processed = report.created + report.updated
     # Abort only when stems/keys can't be read (a misread format). Items held for another reason, such as
     # a figure, are legitimate and must not trigger a rollback.

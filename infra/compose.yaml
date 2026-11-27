@@ -19,10 +19,11 @@ x-backend: &backend
     options: {max-size: "10m", max-file: "3"}
 services:
   peak-web:
-    mem_limit: ${WEB_MEMORY_LIMIT:-256m}
+    mem_limit: ${WEB_MEMORY_LIMIT:-192m}
     image: ${WEB_IMAGE:?Set immutable WEB_IMAGE}
     environment:
       API_INTERNAL_URL: http://peak-api:8000
+      NODE_OPTIONS: --max-old-space-size=${WEB_NODE_HEAP_MB:-96}
     networks: [default, edge]
     depends_on: [peak-api]
     restart: unless-stopped
@@ -31,7 +32,7 @@ services:
     logging: *logs
   peak-api:
     <<: *backend
-    mem_limit: ${API_MEMORY_LIMIT:-512m}
+    mem_limit: ${API_MEMORY_LIMIT:-256m}
     networks: [default, edge]
     environment:
       # Only the edge proxy may assert client identity. Set to its address on the edge network.
@@ -43,14 +44,17 @@ services:
       retries: 3
   worker:
     <<: *backend
-    # Ingestion renders PDFs, so the worker gets the largest allowance.
-    mem_limit: ${WORKER_MEMORY_LIMIT:-768m}
+    # Sized for a 2 GB host shared with Belay. Raise these (and resize) before heavy PDF ingestion.
+    mem_limit: ${WORKER_MEMORY_LIMIT:-384m}
     command: [python, -m, peak.worker]
     # Let the current job finish after SIGTERM (an ingest batch can take minutes).
     stop_grace_period: 120s
   postgres:
-    mem_limit: ${POSTGRES_MEMORY_LIMIT:-384m}
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-192m}
     image: postgres:17.9-bookworm
+    # One household, a handful of connections: keep Postgres small so it can share a 2 GB host with Belay.
+    command: [postgres, -c, shared_buffers=48MB, -c, max_connections=25, -c, work_mem=2MB,
+              -c, maintenance_work_mem=32MB, -c, effective_cache_size=192MB, -c, wal_buffers=4MB]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-peak}
       POSTGRES_USER: ${POSTGRES_USER:-peak}

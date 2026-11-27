@@ -382,3 +382,15 @@ def test_changed_key_discards_the_stale_blind_solve_and_reverifies(db, tmp_path)
     db.expire_all()
     assert db.scalar(select(Item)).status == "verified"
     assert db.scalar(select(ItemCheck).where(ItemCheck.check == "blind_solve")) is None
+
+
+def test_import_streams_the_file_rather_than_loading_it_whole(db, tmp_path, monkeypatch):
+    """A real export can be hundreds of MB; the 2 GB host must never hold it in memory at once."""
+    seed_skills(db)
+    p = write(tmp_path, *[nested(f"s{i}") for i in range(15)])
+    from pathlib import Path
+    def no_slurp(self):
+        raise AssertionError("import must not call read_bytes on the export")
+    monkeypatch.setattr(Path, "read_bytes", no_slurp)
+    rep = import_jsonl(db, p)
+    assert rep.created == 15 and rep.verified == 15
