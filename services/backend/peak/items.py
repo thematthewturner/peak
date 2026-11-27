@@ -105,10 +105,17 @@ def record_attempt(
     return attempt, True
 
 
+def attempt_count(db, user_id: str, item_id: str) -> int:
+    return db.scalar(select(func.count()).select_from(Attempt).where(Attempt.user_id == user_id, Attempt.item_id == item_id)) or 0
+
+
 def review(db, attempt: Attempt, item: Item, *, timed: bool) -> dict:
-    """Reveal key and rationale only after an attempt exists, and never in timed mode."""
+    """Reveal key and rationale only after an attempt exists, never in timed mode, and for a miss
+    only after the cold retry (a later attempt on the same item), per PRD s5.1."""
     if timed:
         return {"attempt_id": attempt.id, "correct": None, "revealed": False}
+    if attempt.correct is not True and attempt_count(db, attempt.user_id, item.id) < 2:
+        return {"attempt_id": attempt.id, "correct": False, "revealed": False, "needs_cold_retry": True}
     return {
         "attempt_id": attempt.id,
         "correct": attempt.correct,
@@ -116,3 +123,14 @@ def review(db, attempt: Attempt, item: Item, *, timed: bool) -> dict:
         "key": json.loads(item.key or "[]"),
         "rationale": item.rationale,
     }
+
+
+def next_item(db, user_id: str, *, skill_id: str | None = None, difficulty: str | None = None) -> Item | None:
+    """A verified, non-benchmark item this user has never attempted (first exposure), or None."""
+    seen = select(Attempt.item_id).where(Attempt.user_id == user_id)
+    q = select(Item).where(Item.status == "verified", Item.benchmark_locked.is_(False), Item.id.not_in(seen))
+    if skill_id:
+        q = q.where(Item.skill_id == skill_id)
+    if difficulty:
+        q = q.where(Item.difficulty == difficulty)
+    return db.scalars(q.order_by(Item.created, Item.id).limit(1)).first()

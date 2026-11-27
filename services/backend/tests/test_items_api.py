@@ -106,3 +106,27 @@ def test_requires_login(db):
     from peak.api import app
     with TestClient(app) as anon:
         assert anon.get("/api/items/x").status_code == 401
+
+
+def test_miss_withholds_solution_until_cold_retry(clients, db):
+    item = make_item(db, source_ref="CR1")
+    _, student = clients
+    first = student.post("/api/attempts", json={"item_id": item.id, "idempotency_key": "key-50001", "answer": "A"}).json()
+    assert first["revealed"] is False and first["needs_cold_retry"] is True
+    assert "rationale" not in first and "key" not in first
+    assert student.get(f"/api/attempts/{first['attempt_id']}/review").json()["revealed"] is False
+    retry = student.post("/api/attempts", json={"item_id": item.id, "idempotency_key": "key-50002", "answer": "B"}).json()
+    assert retry["revealed"] is True and retry["key"] == ["B"]
+    assert student.get(f"/api/attempts/{first['attempt_id']}/review").json()["revealed"] is True
+
+
+def test_next_item_serves_only_fresh_verified_unlocked(clients, db):
+    a = make_item(db, source_ref="N1")
+    make_item(db, source_ref="N2", benchmark_locked=True)
+    make_item(db, source_ref="N3", status="review")
+    _, student = clients
+    assert student.get("/api/items/next").json()["id"] == a.id
+    student.post("/api/attempts", json={"item_id": a.id, "idempotency_key": "key-50003", "answer": "B"})
+    r = student.get("/api/items/next")
+    assert r.status_code == 404 and "new item" in r.json()["detail"]
+    assert student.get("/api/items/next?skill_id=nope").status_code == 404

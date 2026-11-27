@@ -18,6 +18,14 @@ def _item(db, item_id):
     return item
 
 
+@router.get("/items/next")
+def next_item(skill_id: str | None = None, difficulty: str | None = None, user=Depends(authenticate), db=Depends(get_db)):
+    item = svc.next_item(db, user.id, skill_id=skill_id, difficulty=difficulty)
+    if not item:
+        raise HTTPException(404, "Needs a new item")  # never recycle a seen item as fresh evidence
+    return svc.student_safe(item)
+
+
 @router.get("/items/{item_id}")
 def get_item(item_id: str, user=Depends(authenticate), db=Depends(get_db)):
     item = _item(db, item_id)
