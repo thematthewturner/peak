@@ -85,3 +85,36 @@ MICRO_SKILLS: tuple[MicroSkill, ...] = (
 _DOMAIN_KEYS = {d.key for d in DOMAINS}
 for _m in MICRO_SKILLS:
     assert _m.domain is None or _m.domain in _DOMAIN_KEYS, _m.key
+
+
+# Official Digital SAT skill names per domain (College Board specifications).
+OFFICIAL_SKILLS: dict[str, tuple[str, ...]] = {
+    "craft_and_structure": ("Words in Context", "Text Structure and Purpose", "Cross-Text Connections"),
+    "information_and_ideas": (
+        "Central Ideas and Details", "Command of Evidence", "Inferences",
+    ),
+    "standard_english_conventions": ("Boundaries", "Form, Structure, and Sense"),
+    "expression_of_ideas": ("Rhetorical Synthesis", "Transitions"),
+    "algebra": (
+        "Linear equations in one variable", "Linear functions", "Linear equations in two variables",
+        "Systems of two linear equations in two variables", "Linear inequalities in one or two variables",
+    ),
+    "advanced_math": (
+        "Equivalent expressions", "Nonlinear equations in one variable and systems of equations in two variables",
+        "Nonlinear functions",
+    ),
+    "problem_solving_data_analysis": (
+        "Ratios, rates, proportional relationships, and units", "Percentages",
+        "One-variable data: distributions and measures of center and spread",
+        "Two-variable data: models and scatterplots", "Probability and conditional probability",
+        "Inference from sample statistics and margin of error", "Evaluating statistical claims",
+    ),
+    "geometry_trigonometry": ("Area and volume", "Lines, angles, and triangles", "Right triangles and trigonometry", "Circles"),
+}
+
+
+def skill_id(domain: str, name: str) -> str:
+    slug = "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return f"{domain}.{slug[:48]}"

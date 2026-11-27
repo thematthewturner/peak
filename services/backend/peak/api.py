@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from . import config, logs
 from .auth import DUMMY_HASH, authenticate, create_login, digest, passwords, slide_session
 from .db import Heartbeat, Job, Login, SessionLocal, Throttle, User, get_db, now
+from .routes import router
 
 
 @asynccontextmanager
@@ -26,6 +27,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Peak", lifespan=lifespan)
+app.include_router(router)
 
 
 @app.middleware("http")
