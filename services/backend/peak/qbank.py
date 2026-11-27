@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 
 from .models import Attempt, Item, ItemCheck, SourceDocument
-from .sanitize import sanitize_html
+from .sanitize import is_safe_src, sanitize_html
 from .taxonomy import DOMAINS, OFFICIAL_SKILLS, skill_id
 
 DOMAIN_ALIASES = {
@@ -185,7 +185,34 @@ class ImportReport:
     aborted: str | None = None
 
 
-FIGURE = re.compile(r"<\s*(img|svg|object|embed)\b", re.I)
+IMG_TAG = re.compile(r"<\s*img\b[^>]*>", re.I)
+IMG_SRC = re.compile(r"""\bsrc\s*=\s*(["'])(.*?)\1""", re.I | re.S)
+ACTIVE = re.compile(r"<\s*(svg|object|embed|iframe)\b", re.I)
+
+
+def _strings(obj):
+    """Every string inside a nested option structure (json.dumps would escape the quotes we must inspect)."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _strings(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _strings(v)
+
+
+def needs_unstored_figure(*raw: str) -> bool:
+    """True only if the item has an image the sanitizer would drop (remote URL, SVG, object/embed).
+    Inline raster images (data:image/png etc.) are kept as they are, so they do not hold an item."""
+    for text in raw:
+        if ACTIVE.search(text):
+            return True
+        for tag in IMG_TAG.findall(text):
+            m = IMG_SRC.search(tag)
+            if not m or not is_safe_src(m.group(2)):
+                return True
+    return False
 
 
 def to_item(rec: dict, *, source_document_id: str | None, benchmark_locked: bool) -> tuple[Item, list[tuple[str, bool, str]]]:
@@ -201,7 +228,7 @@ def to_item(rec: dict, *, source_document_id: str | None, benchmark_locked: bool
     options, idmap = parse_options_ex(raw_options)
     # Images/SVG are not stored yet (figures must be private assets, PRD s8.3), so an item that needs
     # one would render incomplete. Flag it and hold it out of service rather than serve a broken question.
-    needs_figure = bool(FIGURE.search(raw_stem + raw_passage + json.dumps(raw_options or "")))
+    needs_figure = needs_unstored_figure(raw_stem, raw_passage, *_strings(raw_options))
     keys = parse_keys(_first(rec, "correct_answer", "correctAnswer", "keys", "answer", "correct"))
     if options:  # a key may be given as an option id rather than a letter
         keys = [idmap.get(k, k.upper() if k.upper() in options else k) for k in keys]

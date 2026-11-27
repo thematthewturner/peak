@@ -5,6 +5,7 @@ scripts, styles, event handlers, and all but a few attributes are dropped.
 """
 from __future__ import annotations
 
+import re
 from html import escape
 from html.parser import HTMLParser
 
@@ -20,8 +21,16 @@ ATTRS = {"colspan", "rowspan", "alt", "src", "xmlns", "display", "mathvariant", 
          "open", "close", "linethickness"}
 
 
+# Inline raster images only. SVG is excluded on purpose: it can carry active content.
+INLINE_IMAGE = re.compile(r"^data:image/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=\s]+$")
+
+
+def is_safe_src(value: str) -> bool:
+    return bool(INLINE_IMAGE.match(value)) or value.startswith("asset:")
+
+
 def _safe_src(value: str) -> bool:
-    return value.startswith("/") or value.startswith("data:image/") or value.startswith("asset:")
+    return is_safe_src(value)
 
 
 class _Clean(HTMLParser):

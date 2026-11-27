@@ -54,3 +54,5 @@ input[type="text"], input[type="password"], select { border: 1px solid var(--lin
 .banner { border-radius: 12px; padding: 12px 14px; background: var(--peak-soft); }
 .err { color: var(--bad); }
 @media (max-width: 480px) { .shell { padding: 12px; } }
+/* Equation and figure images come inline from the item bank: keep them on the text baseline. */
+.stem img, .choice img, .card img { max-width: 100%; height: auto; vertical-align: middle; }
