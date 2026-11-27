@@ -88,3 +88,79 @@ def test_sanitizer_blocks_active_content():
     out = sanitize_html('<p onclick="x()">hi<img src="http://evil/x.png" alt="a"><iframe src=x></iframe></p><a href="javascript:1">l</a>')
     assert "onclick" not in out and "evil" not in out and "iframe" not in out and "javascript" not in out
     assert sanitize_html("<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>").startswith("<math><mfrac>")
+
+
+# Real export shape: metadata at the top level, content nested under `detail`.
+def nested(qid="f1bfbed3", detail=None, **top):
+    d = {"type": "mcq", "stem": "<p>Which choice most logically completes the text?</p>",
+         "stimulus": "<p>A passage.</p>",
+         "answerOptions": [{"id": "x1", "content": "one"}, {"id": "x2", "content": "two"},
+                           {"id": "x3", "content": "three"}, {"id": "x4", "content": "four"}],
+         "correct_answer": ["B"], "rationale": "<p>Choice B is best.</p>"}
+    d.update(detail or {})
+    rec = {"questionId": qid, "skill_cd": "INF", "skill_desc": "Inferences", "primary_class_cd": "INI",
+           "primary_class_cd_desc": "Information and Ideas", "difficulty": "H", "ibn": "None",
+           "section": "Reading and Writing", "detail": d}
+    rec.update(top)
+    return rec
+
+
+def test_nested_detail_dict_imports_as_verified(db, tmp_path):
+    seed_skills(db)
+    rep = import_jsonl(db, write(tmp_path, nested()))
+    item = db.scalar(select(Item))
+    assert rep.created == 1 and item.status == "verified" and item.format == "mc"
+    assert item.difficulty == "hard" and item.skill_id == "information_and_ideas.inferences"
+    assert json.loads(item.key) == ["B"] and "Choice B" in item.rationale
+
+
+def test_nested_detail_as_json_string(db, tmp_path):
+    seed_skills(db)
+    rec = nested()
+    rec["detail"] = json.dumps(rec["detail"])
+    import_jsonl(db, write(tmp_path, rec))
+    assert db.scalar(select(Item)).status == "verified"
+
+
+def test_choice_labels_fall_back_to_positions_when_ids_are_opaque(db, tmp_path):
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested()))
+    choices = json.loads(db.scalar(select(Item)).content)["choices"]
+    assert list(choices) == ["A", "B", "C", "D"] and choices["B"] == "two"
+
+
+def test_item_with_figure_is_held_for_review_not_served(db, tmp_path):
+    seed_skills(db)
+    rec = nested(detail={"stem": '<p>See graph.</p><img src="https://cdn.example/fig.png" alt="g">'})
+    rep = import_jsonl(db, write(tmp_path, rec))
+    assert db.scalar(select(Item)).status == "review" and rep.check_failures == {"figure": 1}
+
+
+def test_misread_export_aborts_and_saves_nothing(db, tmp_path):
+    seed_skills(db)
+    junk = [{"questionId": f"id{i}", "difficulty": "H", "skill_desc": "Inferences",
+             "primary_class_cd_desc": "Information and Ideas", "detail": {"unknown_field": "x"}} for i in range(12)]
+    p = write(tmp_path, *junk)
+    rep = import_jsonl(db, p)
+    assert rep.aborted and "not understood" in rep.aborted and "unknown_field" in rep.aborted
+    assert db.scalar(select(Item)) is None  # rolled back
+    # The file is not marked published, so re-running after a fix works without a manual reset.
+    good = write(tmp_path, *[nested(qid=f"ok{i}") for i in range(12)], name="good.jsonl")
+    again = import_jsonl(db, good)
+    assert again.aborted is None and again.verified == 12
+
+
+def test_answer_key_given_as_option_id_resolves_to_letter(db, tmp_path):
+    seed_skills(db)
+    import_jsonl(db, write(tmp_path, nested(detail={"correct_answer": ["x3"]})))
+    assert json.loads(db.scalar(select(Item)).key) == ["C"]
+    assert db.scalar(select(Item)).status == "verified"
+
+
+def test_numeric_nested_record(db, tmp_path):
+    seed_skills(db)
+    rec = nested(detail={"type": "spr", "answerOptions": None, "correct_answer": ["3/2", "1.5"], "stimulus": None},
+                 skill_desc="Linear equations in one variable", primary_class_cd_desc="Algebra", difficulty="E")
+    import_jsonl(db, write(tmp_path, rec))
+    item = db.scalar(select(Item))
+    assert item.format == "numeric" and item.status == "verified" and item.difficulty == "easy"
