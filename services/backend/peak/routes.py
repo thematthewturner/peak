@@ -424,3 +424,11 @@ def taxonomy(user=Depends(authenticate)):
 def skills(user=Depends(authenticate), db=Depends(get_db)):
     rows = db.scalars(select(Skill).where(Skill.parent_id.is_(None))).all()
     return {s.id: {"name": s.skill, "domain": s.domain, "section": s.section} for s in rows}
+
+
+@router.get("/bank")
+def bank(user=Depends(authenticate), db=Depends(get_db)):
+    """How many questions are ready, so the UI can tell 'none loaded' apart from 'none fresh left'."""
+    ready = db.scalar(select(func.count()).select_from(Item).where(Item.status == "verified", Item.benchmark_locked.is_(False))) or 0
+    seen = db.scalar(select(func.count(func.distinct(Attempt.item_id))).where(Attempt.user_id == user.id)) or 0
+    return {"ready": ready, "seen": seen}

@@ -6,6 +6,7 @@ import { useToast } from "@/components/Toast";
 import { validateEntry } from "@/lib/entry";
 import { CAUSE, DOMAIN, NEEDS_PATTERN } from "@/lib/format";
 import { useSession } from "@/lib/me";
+import { ApiError } from "@/lib/session";
 import type { AttemptResult, Diagnosis, Item, MicroSkill, SkillMap, Taxonomy } from "@/lib/types";
 
 // The core loop: answer, say how sure, check; a miss gets one more look before the answer shows;
@@ -58,6 +59,7 @@ function Practice() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [savedCue, setSavedCue] = useState<string | null>(null);
+  const [emptyBank, setEmptyBank] = useState(false);
 
   const load = useCallback(async () => {
     setPhase("loading"); setAnswer(""); setConf(""); setFirst(null); setResult(null); setRetryAnswer(null);
@@ -72,8 +74,17 @@ function Practice() {
         setFallback(true);
       }
       setItem(it); setPhase("answer"); setStarted(Date.now()); setCount((c) => c + 1);
-    } catch {
-      setItem(null); setPhase("empty");
+    } catch (e) {
+      setItem(null);
+      if (e instanceof ApiError && e.status === 404) {
+        // Tell "nothing loaded yet" apart from "everything already seen".
+        const b = await api<{ ready: number; seen: number }>("/bank").catch(() => null);
+        setEmptyBank(!!b && b.ready === 0);
+        setPhase("empty");
+      } else {
+        setError(e instanceof Error ? `Couldn't load a question: ${e.message}` : "Couldn't load a question.");
+        setPhase("empty"); setEmptyBank(false);
+      }
     }
   }, [api, skill]);
 
@@ -194,7 +205,12 @@ function Practice() {
       <div className="view" style={{ maxWidth: isRW ? 1100 : 860 }}>
         <div className="row spread"><h1 className="title" style={{ fontSize: 20 }}>Practice</h1>{count > 0 && <span className="hint">Question {count} this session</span>}</div>
         {fallback && phase === "answer" && <p className="banner">No fresh question is left for today&apos;s focus skill, so here&apos;s the next best one. Repeats can&apos;t count as proof.</p>}
-        {phase === "empty" && <p className="banner">Out of fresh questions{skill ? " for this skill" : ""}. Repeats can&apos;t count as proof, so Peak won&apos;t serve one.</p>}
+        {phase === "empty" && !error && emptyBank && (
+          <div className="banner"><b>No questions are loaded yet.</b> Load the question bank from Terminal, then come back:
+            <pre style={{ margin: "8px 0 0", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: 12.5 }}>cd ~/code/peak/services/backend{"\n"}uv run python -m peak.local import PATH/TO/collegeboard_qbank.jsonl</pre>
+          </div>
+        )}
+        {phase === "empty" && !error && !emptyBank && <p className="banner">You&apos;ve seen every question{skill ? " for this skill" : ""}. Repeats can&apos;t count as proof, so Peak won&apos;t serve one.</p>}
         {item && phase !== "loading" && phase !== "empty" && (
           <>
             <div className="q-meta">

@@ -145,3 +145,12 @@ def test_skills_names_for_the_ui(clients, db):
     body = student.get("/api/skills").json()
     assert body["advanced_math.nonlinear-functions"] == {"name": "Nonlinear functions", "domain": "advanced_math", "section": "math"}
     assert not any(k.startswith("micro.") for k in body)
+
+
+def test_bank_counts_ready_and_seen(clients, db):
+    _, student = clients
+    assert student.get("/api/bank").json() == {"ready": 0, "seen": 0}
+    item = make_item(db)
+    make_item(db, source_ref="LOCKED", benchmark_locked=True)
+    student.post("/api/attempts", json={"item_id": item.id, "idempotency_key": "key-90001", "answer": "B"})
+    assert student.get("/api/bank").json() == {"ready": 1, "seen": 1}
