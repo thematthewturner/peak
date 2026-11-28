@@ -1,6 +1,7 @@
 "use client";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import MathText from "@/components/MathText";
 import QuestionCard from "@/components/QuestionCard";
 import Shell from "@/components/Shell";
 import Solved from "@/components/Solved";
@@ -60,8 +61,8 @@ function CardsStep({ api, count, onDone, keyRef }: {
     <div className="cards-step">
       <p className="hint">Say the answer before you flip. {cards!.length} to go.</p>
       <button className="flash" onClick={() => setShown((s) => !s)}>
-        <span className="kind">{card.kind}</span><span className="front">{card.front}</span>
-        {shown ? <span className="back">{card.back}</span> : <span className="hint">Space to flip</span>}
+        <span className="kind">{card.kind}</span><span className="front">{card.kind === "your rule" ? card.front : <MathText text={card.front} />}</span>
+        {shown ? <span className="back">{card.kind === "your rule" ? card.back : <MathText text={card.back} />}</span> : <span className="hint">Space to flip</span>}
       </button>
       {shown && <div className="row"><button className="go" onClick={() => rate(true)}>Knew it →</button><button className="ghost" onClick={() => rate(false)}>← Missed it</button></div>}
     </div>

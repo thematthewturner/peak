@@ -268,3 +268,13 @@ table.skills td:first-child a:hover { color: var(--glacier); }
   .focus-card { padding: 20px; }
   .focus-card h2 { font-size: 24px; }
 }
+
+/* typeset math (KaTeX) */
+.math-text code { font: 0.92em var(--mono); background: var(--chip); padding: 1px 5px; border-radius: 5px; }
+.flash .katex-display { margin: 10px 0; text-align: left; }
+.flash .katex-display > .katex { text-align: left; }
+.flash .back .katex { font-size: 1.2em; }
+.flash .back .katex-display > .katex { font-size: 1.55em; }
+.flash .front .katex { font-size: 1.05em; }
+.tip-body .katex { font-size: 1.05em; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }

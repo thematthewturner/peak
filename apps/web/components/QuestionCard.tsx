@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import MathText from "@/components/MathText";
 import PaceRing from "@/components/PaceRing";
 import Solved, { Html } from "@/components/Solved";
 import type { Api } from "@/lib/api";
@@ -202,7 +203,7 @@ export default function QuestionCard({
       {tip && phase === "answer" && (
         <div className={`tip ${tipOpen ? "" : "closed"}`}>
           <button className="tip-head" onClick={() => setTipOpen((o) => !o)} aria-expanded={tipOpen}><span className="spark" />Strategy</button>
-          {tipOpen && <div className="tip-body"><span>{tip.how}</span><span className="trap">Watch for: {tip.trap}</span></div>}
+          {tipOpen && <div className="tip-body"><MathText text={tip.how} /><span className="trap">Watch for: <MathText text={tip.trap} /></span></div>}
         </div>
       )}
 

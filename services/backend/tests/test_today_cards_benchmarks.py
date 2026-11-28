@@ -74,3 +74,22 @@ def test_session_ownership(clients):
     assert parent.post(f"/api/sessions/{sid}/end", json={"usefulness": 4}).status_code == 404
     assert student.post(f"/api/sessions/{sid}/end", json={"usefulness": 4}).status_code == 200
     assert json.dumps(student.get("/api/benchmarks").json())
+
+
+def test_card_text_refresh_keeps_schedule(db):
+    from sqlalchemy import select
+    from peak.cards_seed import FORMULA, seed_cards
+    from peak.db import User
+    db.add(User(id="u9", username="s9", password_hash="x", role="student"))
+    db.commit()
+    db.add(Card(user_id="u9", kind="formula", front="Slope through (x1,y1),(x2,y2)", back="m = (y2 - y1)/(x2 - x1)",
+                state='{"due":"keep"}', due="2027-01-01"))
+    db.add(Card(user_id="u9", kind="formula", front="Distance between two points", back="d = sqrt(...)", state="{}", due="2027-02-02"))
+    db.commit()
+    created = seed_cards(db, "u9")
+    cards = {c.front: c for c in db.scalars(select(Card).where(Card.user_id == "u9"))}
+    assert created == len(cards) - 2  # the two existing cards were updated, not duplicated
+    slope = cards["Slope through $(x_1, y_1)$ and $(x_2, y_2)$"]
+    assert slope.due == "2027-01-01" and slope.state == '{"due":"keep"}' and "\\dfrac" in slope.back
+    assert "\\sqrt" in cards["Distance between two points"].back and cards["Distance between two points"].due == "2027-02-02"
+    assert seed_cards(db, "u9") == 0 and all("$" in b for _, b in FORMULA)

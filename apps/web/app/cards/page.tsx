@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import MathText from "@/components/MathText";
 import Shell from "@/components/Shell";
 import { useSession } from "@/lib/me";
 import type { Card } from "@/lib/types";
@@ -44,8 +45,8 @@ export default function Cards() {
           <>
             <button className="flash" onClick={() => setShown((s) => !s)} aria-label="Flip card">
               <span className="kind">{card.kind}</span>
-              <span className="front">{card.front}</span>
-              {shown ? <span className="back">{card.back}</span> : <span className="hint">Space to flip</span>}
+              <span className="front">{card.kind === "your rule" ? card.front : <MathText text={card.front} />}</span>
+              {shown ? <span className="back">{card.kind === "your rule" ? card.back : <MathText text={card.back} />}</span> : <span className="hint">Space to flip</span>}
             </button>
             {shown ? (
               <div className="row">

@@ -78,8 +78,12 @@ def prepare(student: str) -> None:
     from .db import SessionLocal, User
     from .seed import seed_skills
 
+    from .cards_seed import seed_cards
+
     with SessionLocal() as db:
         seed_skills(db)
+        for u in db.scalars(select(User).where(User.role == "student")):
+            seed_cards(db, u.id)  # refresh card text; each card keeps its review schedule
         if not db.scalar(select(User).where(User.username == student)):
             # Opening Peak uses the launcher's one-time token; this password is random and never shown.
             db.add(User(username=student, role="student", password_hash=passwords.hash(secrets.token_urlsafe(24))))
