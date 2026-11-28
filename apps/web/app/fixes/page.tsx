@@ -10,9 +10,10 @@ const RUNGS = ["Missed", "Repaired", "Retry", "Proof", "Proven"];
 const AT: Record<string, number> = { OPEN: 0, REOPENED: 0, REPAIRING: 1, RETRY_DUE: 2, TRANSFER_DUE: 3, CONFIRMED: 4, MAINTAIN: 4 };
 
 function nextLine(t: Ticket): string {
-  if (t.state === "CONFIRMED" || t.state === "MAINTAIN") return "Proven on a fresh question";
-  if (t.state === "RETRY_DUE") return t.next_due ? `Retry ${shortDate(t.next_due)}` : "Retry due";
-  if (t.state === "TRANSFER_DUE") return t.next_due ? `Proof ${shortDate(t.next_due)} · unlabeled, mixed set` : "Proof due";
+  if (t.state === "MAINTAIN") return "Retired: held at the 3-week check";
+  if (t.state === "CONFIRMED") return t.next_due ? `Proven · 3-week check ${shortDate(t.next_due)}` : "Proven on a fresh question";
+  if (t.state === "RETRY_DUE") return t.next_due ? `Re-attempt ${shortDate(t.next_due)}` : "Re-attempt due";
+  if (t.state === "TRANSFER_DUE") return t.next_due ? `1-week proof ${shortDate(t.next_due)} · hidden in a mixed set` : "Proof due";
   if (t.state === "REOPENED") return "Reopened";
   return "Needs a repair";
 }
@@ -38,7 +39,7 @@ export default function Fixes() {
       <div className="view">
         <div>
           <h1 className="title">Fixes</h1>
-          <p className="sub">Each miss climbs five rungs. Only a fresh question a week later counts as proof.</p>
+          <p className="sub">Each miss climbs five rungs: re-attempt at 2 days, a fresh question at a week, a final check at 3 weeks. Only fresh questions count as proof.</p>
         </div>
         {rows && rows.length === 0 && <p className="sub">No fixes yet. When you miss a question in Practice and name what happened, it shows up here.</p>}
         <div>
@@ -59,6 +60,7 @@ export default function Fixes() {
                   })}
                 </div>
                 {t.reopen_reason && <span className="hint err">Reopened: {t.reopen_reason}</span>}
+                {t.rule && <p className="rule-line">&ldquo;{t.rule}&rdquo; <span className="hint">· your rule</span></p>}
                 {t.cue && <span className="cue">{t.cue}</span>}
               </div>
             );

@@ -1,10 +1,11 @@
 "use client";
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import { useToast } from "@/components/Toast";
-import { SAT_DAY } from "@/lib/format";
+import { DOMAIN, SAT_DAY, shortDate } from "@/lib/format";
 import { useSession } from "@/lib/me";
-import type { AttemptRow, Series, Ticket } from "@/lib/types";
+import type { AttemptRow, Series, SkillMap, Stats, Ticket } from "@/lib/types";
 
 // Only clean Bluebook results (unseen form, one sitting, no help) are drawn as the trend.
 // PSAT and official SAT scores sit on the same line as reference points; everything else is listed apart.
@@ -49,13 +50,18 @@ export default function Progress() {
   const [series, setSeries] = useState<Series | null>(null);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
-  const [form, setForm] = useState({ source: "psat", taken_on: "2026-10-15", rw: "620", math: "500", clean: false });
+  const [form, setForm] = useState({ source: "psat", taken_on: "2026-10-15", rw: "620", math: "500", clean: false, recognized: false });
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [skills, setSkills] = useState<SkillMap>({});
+  const [tab, setTab] = useState<"math" | "rw">("math");
   const [error, setError] = useState("");
 
   const load = useCallback(() => {
     api<Series>("/benchmarks").then(setSeries).catch(() => {});
     api<Ticket[]>("/tickets").then(setTickets).catch(() => {});
     api<AttemptRow[]>("/attempts?limit=50").then(setAttempts).catch(() => {});
+    api<Stats>("/stats").then(setStats).catch(() => {});
+    api<SkillMap>("/skills").then(setSkills).catch(() => {});
   }, [api]);
   useEffect(() => { if (me) load(); }, [me, load]);
 
@@ -66,10 +72,10 @@ export default function Progress() {
     try {
       await api("/benchmarks", "POST", {
         source: form.source, taken_on: form.taken_on, rw_score: Number(form.rw) || null, math_score: Number(form.math) || null,
-        unseen: clean, single_sitting: clean, uninterrupted: clean, unaided: clean,
+        unseen: clean, single_sitting: clean, uninterrupted: clean, unaided: clean, recognized: form.recognized,
       });
-      toast(form.source === "bluebook" && !clean ? "Saved, kept apart from the clean trend." : "Saved.");
-      setForm((f) => ({ ...f, source: "bluebook", rw: "", math: "", clean: true, taken_on: new Date().toISOString().slice(0, 10) }));
+      toast(form.source === "bluebook" && (!clean || form.recognized) ? "Saved, kept apart from the clean trend." : "Saved.");
+      setForm((f) => ({ ...f, source: "bluebook", rw: "", math: "", clean: true, recognized: false, taken_on: new Date().toISOString().slice(0, 10) }));
       load();
     } catch (err) { setError(err instanceof Error ? err.message : "That didn't save."); }
   }
@@ -92,13 +98,41 @@ export default function Progress() {
       <div className="view">
         <div>
           <h1 className="title">Progress</h1>
-          <p className="sub">Clean Bluebook results are the trend that counts: an unseen form, one sitting, no help.</p>
+          <p className="sub">Clean Bluebook results are the trend that counts: an unseen form, one sitting, no help. Use the median of your last two or three, not the best.</p>
         </div>
         {pts.length > 0 ? <Chart points={pts} /> : <p className="banner">No scores yet. Start with your October PSAT below: 620 Reading and Writing, 500 Math. Fix the date if you know the exact day.</p>}
         <div className="stats">
           <div className="stat"><b>{latest ? Math.max(0, 1400 - latest.v) : "–"}</b><span>points to the 1400 line</span></div>
           <div className="stat"><b>{proven}</b><span>fixes proven on fresh questions</span></div>
-          <div className="stat"><b>{acc === null ? "–" : `${acc}%`}</b><span>right, last {answered.length || 50} answers</span></div>
+          <div className="stat"><b>{stats && stats.calibration.sure ? `${Math.round((100 * stats.calibration.sure_right) / stats.calibration.sure)}%` : acc === null ? "–" : `${acc}%`}</b><span>{stats && stats.calibration.sure ? `right when you're sure (${stats.calibration.sure_wrong} sure-but-wrong caught)` : `right, last ${answered.length || 50} answers`}</span></div>
+        </div>
+        <div className="panel">
+          <div className="row spread">
+            <b>Your skills</b>
+            <div className="seg" role="group" aria-label="Section">
+              <button aria-pressed={tab === "math"} onClick={() => setTab("math")}>Math</button>
+              <button aria-pressed={tab === "rw"} onClick={() => setTab("rw")}>Reading &amp; Writing</button>
+            </div>
+          </div>
+          <p className="hint">Practice counts: first tries on your own. These are drills, not an SAT score. Only Bluebook tells you that.</p>
+          <table className="scores skills">
+            <thead><tr><th>Skill</th><th>On your own</th><th>Last practiced</th><th>Where it stands</th></tr></thead>
+            <tbody>
+              {Object.entries(skills).filter(([, v]) => v.section === tab).sort((a, b) => (a[1].domain + a[1].name).localeCompare(b[1].domain + b[1].name)).map(([id, v]) => {
+                const st = stats?.skills[id];
+                const r = st?.recent_accuracy ?? null;
+                const status = !st || st.attempts < 5 ? ["Still gathering evidence", ""] : (r ?? 0) >= 0.8 ? ["Solid", "ok"] : (r ?? 0) >= 0.6 ? ["Getting there", ""] : ["Priority", "warn"];
+                return (
+                  <tr key={id}>
+                    <td><Link href={`/practice/?skill=${encodeURIComponent(id)}`}>{v.name}</Link><span className="hint"> · {DOMAIN[v.domain]}</span></td>
+                    <td>{st ? `${st.correct} of ${st.attempts}` : "–"}</td>
+                    <td>{st?.last ? shortDate(st.last) : "–"}</td>
+                    <td><span className={`chip ${status[1]}`}>{status[0]}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
         <form className="panel" onSubmit={add}>
           <b>Log a score</b>
@@ -113,7 +147,11 @@ export default function Progress() {
             <label className="field">Math<input id="bm-math" inputMode="numeric" value={form.math} onChange={set("math")} placeholder="200–800" /></label>
           </div>
           {form.source === "bluebook" && (
-            <label className="check"><input id="bm-clean" type="checkbox" checked={form.clean} onChange={set("clean")} />A form I&apos;d never seen, taken in one sitting, without help</label>
+            <>
+              <label className="check"><input id="bm-clean" type="checkbox" checked={form.clean} onChange={set("clean")} />A form I&apos;d never seen, taken in one sitting, without help</label>
+              <label className="check"><input id="bm-recognized" type="checkbox" checked={form.recognized} onChange={set("recognized")} />I recognized some questions from practice</label>
+              <p className="hint">Peak&apos;s question bank may overlap with Bluebook forms; that hasn&apos;t been checked yet. A recognized question makes the score look better than it is, so it stays out of the trend.</p>
+            </>
           )}
           {error && <p className="err" role="alert">{error}</p>}
           <button className="go" disabled={!form.rw || !form.math}>Save score</button>

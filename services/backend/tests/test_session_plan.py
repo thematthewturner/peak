@@ -161,3 +161,70 @@ def test_interleave_separates_domains_whenever_possible():
         out = session_plan.interleave(steps, random.Random(seed))
         doms = [s["domain"] for s in out]
         assert sorted(doms) == sorted("aaaabbbcc") and all(x != y for x, y in zip(doms, doms[1:]))
+
+
+def test_preview_describes_today_without_saving(clients, db):
+    from peak.models import Session
+    bank(db)
+    _, student = clients
+    p = student.get("/api/sessions/preview?minutes=45").json()
+    assert p["focus_skill"] and p["focus_reason"] and p["questions"] >= 10 and p["section"] == "math"
+    assert "hasn't seen you try it yet" in p["focus_reason"]
+    assert db.scalar(select(Session)) is None and db.scalar(select(Attempt)) is None
+
+
+def test_focus_reason_names_the_last_pattern(clients, db):
+    bank(db)
+    uid = user_id(clients)
+    t, origin = make_ticket(db, uid, "OPEN", date.today() + timedelta(days=5))
+    plan = session_plan.build(db, uid, 45, date.today(), only_skill=origin.skill_id)
+    assert plan["focus_reason"] == "Last time, sign slips when factoring tripped you up. Try it again in new problems."
+
+
+def test_just_this_skill_stays_on_one_skill(clients, db):
+    bank(db)
+    _, student = clients
+    sid = skill_id("geometry_trigonometry", "Circles")
+    plan = student.post("/api/sessions/start", json={"minutes": 25, "only_skill": sid}).json()
+    qs = [s for s in plan["steps"] if s.get("item_id")]
+    assert qs and all(s["skill_id"] == sid for s in qs)
+    assert student.post("/api/sessions/start", json={"minutes": 25, "section": "rw"}).json()["section"] == "rw"
+
+
+def test_active_session_offers_resume_until_done(clients, db):
+    bank(db)
+    _, student = clients
+    assert student.get("/api/sessions/active").json() is None
+    plan = student.post("/api/sessions/start", json={"minutes": 15}).json()
+    q = next(s for s in plan["steps"] if s["kind"] == "question")
+    student.post("/api/attempts", json={"item_id": q["item_id"], "idempotency_key": "res-0001", "answer": "B",
+                                         "confidence": "sure", "session_id": plan["id"]})
+    act = student.get("/api/sessions/active").json()
+    assert act["id"] == plan["id"] and act["left"] == act["total"] - 1
+    student.post(f"/api/sessions/{plan['id']}/end", json={"usefulness": 4})
+    assert student.get("/api/sessions/active").json() is None
+
+
+def test_show_example_is_a_solved_same_skill_question(clients, db):
+    bank(db)
+    _, student = clients
+    sid = skill_id("algebra", "Linear functions")
+    ex = student.post(f"/api/skills/{sid}/example", json={"idempotency_key": "ex-00001"}).json()
+    assert ex["skill_id"] == sid and ex["key"] == ["B"] and ex["rationale"]
+    again = student.post(f"/api/skills/{sid}/example", json={"idempotency_key": "ex-00001"}).json()
+    assert again["id"] == ex["id"]  # idempotent: the same example, one recorded study
+
+
+def test_seen_before_is_labeled_and_never_first_exposure(clients, db):
+    bank(db, per_skill=1)
+    _, student = clients
+    sid = skill_id("geometry_trigonometry", "Circles")
+    item = student.get(f"/api/items/next?skill_id={sid}").json()
+    assert item["seen_before"] is False
+    student.post("/api/attempts", json={"item_id": item["id"], "idempotency_key": "seen-001", "answer": "A"})
+    assert student.get(f"/api/items/next?skill_id={sid}").status_code == 404
+    again = student.get(f"/api/items/next?skill_id={sid}&allow_seen=true").json()
+    assert again["id"] == item["id"] and again["seen_before"] is True
+    student.post("/api/attempts", json={"item_id": item["id"], "idempotency_key": "seen-002", "answer": "B"})
+    firsts = [a.first_exposure for a in db.scalars(select(Attempt).where(Attempt.item_id == item["id"]).order_by(Attempt.created))]
+    assert firsts == [True, False]

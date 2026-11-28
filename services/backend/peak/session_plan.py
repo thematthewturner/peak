@@ -36,9 +36,10 @@ def skill_stats(db, user_id: str) -> dict[str, dict]:
         .order_by(Attempt.created)
     ).all()
     out: dict[str, dict] = defaultdict(lambda: {"attempts": 0, "correct": 0, "recent": [], "medium_recent": [],
-                                                "sure": 0, "sure_wrong": 0})
-    for sid, diff, correct, conf, _ in rows:
+                                                "sure": 0, "sure_wrong": 0, "last": None})
+    for sid, diff, correct, conf, created in rows:
         s = out[sid]
+        s["last"] = created
         s["attempts"] += 1
         s["correct"] += bool(correct)
         s["recent"] = (s["recent"] + [bool(correct)])[-10:]
@@ -120,7 +121,9 @@ def interleave(steps: list[dict], rng: random.Random) -> list[dict]:
 
 
 # ---- the queue -------------------------------------------------------------------------------
-def build(db, user_id: str, minutes: int, today: date, seed: int | None = None) -> dict:
+def build(db, user_id: str, minutes: int, today: date, seed: int | None = None, *,
+          section: str | None = None, only_skill: str | None = None) -> dict:
+    """only_skill: 'Just this skill' from Change session. Everything stays spaced and fresh, but unmixed."""
     rng = random.Random(seed)
     skills = {s.id: s for s in db.scalars(select(Skill).where(Skill.parent_id.is_(None)))}
     stats = skill_stats(db, user_id)
@@ -128,7 +131,9 @@ def build(db, user_id: str, minutes: int, today: date, seed: int | None = None) 
                                           Ticket.next_due <= today.isoformat()).order_by(Ticket.next_due)).all()
     due_cards = db.scalar(select(func.count()).select_from(Card).where(
         Card.user_id == user_id, Card.due <= datetime.now(timezone.utc).isoformat())) or 0
-    section = choose_section(db, user_id, today)
+    if only_skill and only_skill in skills:
+        section = skills[only_skill].section
+    section = section if section in ("math", "rw") else choose_section(db, user_id, today)
     tests = [date.fromisoformat(t.on_date) for t in db.scalars(select(SchoolTest).where(SchoolTest.user_id == user_id))]
 
     # Priority within the chosen section: domain weight x her smoothed miss rate (guide s3 priority rule).
@@ -145,6 +150,8 @@ def build(db, user_id: str, minutes: int, today: date, seed: int | None = None) 
         if len(top) < 3 and all(skills[t].domain != skills[x.skill_id].domain for t in top):
             top.append(x.skill_id)
     top += [x.skill_id for x in ranked if x.skill_id not in top][: 3 - len(top)]
+    if only_skill and only_skill in skills:
+        top = [only_skill]
     focus = top[0] if top else None
 
     plan = composer.compose(minutes, due_verifications=len(due), due_cards=due_cards, focus_skill=focus,
@@ -206,8 +213,10 @@ def build(db, user_id: str, minutes: int, today: date, seed: int | None = None) 
     # 4. Mixed set.
     n = max(3, round((block_min.get("mixed", 0) + focus_min) / PER_QUESTION_MIN)) if plan.minutes > 5 else 0
     n_priority = round(n * PRIORITY_SHARE)
+    if only_skill:
+        n_priority = n
     targets = [top[i % len(top)] for i in range(n_priority)] if top else []
-    others = [s.id for s in in_section if s.id not in top]
+    others = [s.id for s in in_section if s.id not in top] if not only_skill else []
     targets += [rng.choice(others) for _ in range(n - len(targets))] if others else []
     mixed = list(hidden_proofs)
     for sid in targets[: max(0, n - len(hidden_proofs))]:
@@ -227,7 +236,28 @@ def build(db, user_id: str, minutes: int, today: date, seed: int | None = None) 
         if count:
             blocks.append({"key": key, "title": title, "why": why, "count": count})
     return {"section": section, "minutes": plan.minutes, "throttled": plan.throttled, "focus_skill": focus,
+            "focus_reason": focus_reason(db, user_id, focus, stats, skills), "only_skill": only_skill,
             "blocks": blocks, "steps": steps}
+
+
+def focus_reason(db, user_id: str, focus: str | None, stats: dict, skills: dict) -> str:
+    """One sentence on why this skill, today (design guide: Home explains the choice in one sentence)."""
+    if not focus:
+        return ""
+    from .taxonomy import MICRO_SKILLS
+    t = db.scalar(select(Ticket).where(Ticket.user_id == user_id, Ticket.skill_id == focus)
+                  .order_by(Ticket.created.desc()).limit(1))
+    if t and t.micro_skill:
+        label = next((m.label for m in MICRO_SKILLS if m.key == t.micro_skill), t.micro_skill).lower()
+        return f"Last time, {label} tripped you up. Try it again in new problems."
+    st = stats.get(focus)
+    if st and st["attempts"] >= 4:
+        return f"You've got {st['correct']} of {st['attempts']} here so far. It's your biggest gain right now."
+    share = {"algebra": 35, "advanced_math": 35, "problem_solving_data_analysis": 15, "geometry_trigonometry": 15,
+             "craft_and_structure": 28, "information_and_ideas": 26, "standard_english_conventions": 26,
+             "expression_of_ideas": 20}.get(skills[focus].domain, 0)
+    section = "Math" if skills[focus].section == "math" else "Reading and Writing"
+    return f"About {share}% of {section}, and Peak hasn't seen you try it yet."
 
 
 def summary(db, user_id: str, session_id: str) -> dict:

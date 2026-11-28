@@ -19,11 +19,23 @@ def _item(db, item_id):
 
 
 @router.get("/items/next")
-def next_item(skill_id: str | None = None, difficulty: str | None = None, user=Depends(authenticate), db=Depends(get_db)):
+def next_item(skill_id: str | None = None, difficulty: str | None = None, allow_seen: bool = False,
+              user=Depends(authenticate), db=Depends(get_db)):
     item = svc.next_item(db, user.id, skill_id=skill_id, difficulty=difficulty)
-    if not item:
-        raise HTTPException(404, "Needs a new item")  # never recycle a seen item as fresh evidence
-    return svc.student_safe(item)
+    if item:
+        return {**svc.student_safe(item), "seen_before": False}
+    if allow_seen:
+        # Pool exhausted: offer the least recently seen one, labeled. Its attempts aren't first exposures,
+        # so they never count as fresh evidence.
+        last = (select(Attempt.item_id, func.max(Attempt.created).label("at")).where(Attempt.user_id == user.id)
+                .group_by(Attempt.item_id).subquery())
+        q = select(Item).join(last, last.c.item_id == Item.id).where(Item.status == "verified", Item.benchmark_locked.is_(False))
+        if skill_id:
+            q = q.where(Item.skill_id == skill_id)
+        old = db.scalars(q.order_by(last.c.at).limit(1)).first()
+        if old:
+            return {**svc.student_safe(old), "seen_before": True}
+    raise HTTPException(404, "Needs a new item")  # never recycle a seen item as fresh evidence
 
 
 @router.get("/items/{item_id}")
@@ -338,6 +350,7 @@ class BenchmarkIn(BaseModel):
     single_sitting: bool = False
     uninterrupted: bool = False
     unaided: bool = False
+    recognized: bool = False  # recognized questions from practice: the form isn't unseen
 
 
 @router.post("/benchmarks")
@@ -346,7 +359,7 @@ def add_benchmark(body: BenchmarkIn, user=Depends(authenticate), db=Depends(get_
         date.fromisoformat(body.taken_on)
     except ValueError:
         raise HTTPException(422, "taken_on must be YYYY-MM-DD") from None
-    c = Conditions(body.unseen, body.single_sitting, body.uninterrupted, body.unaided)
+    c = Conditions(body.unseen and not body.recognized, body.single_sitting, body.uninterrupted, body.unaided)
     series = series_for(body.source, c)
     total = body.rw_score + body.math_score if body.rw_score and body.math_score else None
     b = Benchmark(user_id=user.id, series=series, taken_on=body.taken_on, rw_score=body.rw_score,
@@ -441,6 +454,8 @@ from . import session_plan  # noqa: E402
 
 class StartIn(BaseModel):
     minutes: int = 45
+    section: str | None = Field(default=None, pattern="^(math|rw)$")
+    only_skill: str | None = None
 
 
 @router.post("/sessions/start")
@@ -449,7 +464,7 @@ def start_guided(body: StartIn, user=Depends(authenticate), db=Depends(get_db)):
         raise HTTPException(422, f"minutes must be one of {composer.SESSION_MINUTES}")
     if not db.scalar(select(func.count()).select_from(Card).where(Card.user_id == user.id)):
         seed_cards(db, user.id)
-    plan = session_plan.build(db, user.id, body.minutes, _today())
+    plan = session_plan.build(db, user.id, body.minutes, _today(), section=body.section, only_skill=body.only_skill)
     s = Session(user_id=user.id, purpose="drill", mode="learning", minutes=plan["minutes"], plan=json.dumps(plan))
     db.add(s)
     db.commit()
@@ -461,6 +476,37 @@ def _own_session(db, user, session_id) -> Session:
     if not s or s.user_id != user.id:
         raise HTTPException(404, "Session not found")
     return s
+
+
+@router.get("/sessions/preview")
+def preview_guided(minutes: int = 45, section: str | None = None, only_skill: str | None = None,
+                   user=Depends(authenticate), db=Depends(get_db)):
+    """What Today's card describes. Nothing is saved; Start builds the real session."""
+    if minutes not in composer.SESSION_MINUTES:
+        raise HTTPException(422, f"minutes must be one of {composer.SESSION_MINUTES}")
+    if not db.scalar(select(func.count()).select_from(Card).where(Card.user_id == user.id)):
+        seed_cards(db, user.id)
+    plan = session_plan.build(db, user.id, minutes, _today(), seed=0, section=section, only_skill=only_skill)
+    db.rollback()
+    return {k: plan[k] for k in ("section", "minutes", "throttled", "focus_skill", "focus_reason", "blocks", "only_skill")} | {
+        "questions": sum(1 for s in plan["steps"] if s["kind"] in ("question", "reattempt"))}
+
+
+@router.get("/sessions/active")
+def active_guided(user=Depends(authenticate), db=Depends(get_db)):
+    """The most recent unfinished guided session from the last two days, so Today can offer to resume it."""
+    since = (_today() - timedelta(days=2)).isoformat()
+    for s in db.scalars(select(Session).where(Session.user_id == user.id, Session.ended.is_(None),
+                                              Session.started >= since).order_by(Session.started.desc()).limit(3)):
+        plan = json.loads(s.plan or "{}")
+        steps = [x for x in plan.get("steps", []) if x.get("item_id")]
+        if not steps:
+            continue
+        done = set(db.scalars(select(Attempt.item_id).where(Attempt.session_id == s.id)))
+        left = sum(1 for x in steps if x["item_id"] not in done)
+        if 0 < left < len(steps):
+            return {"id": s.id, "left": left, "total": len(steps), "focus_skill": plan.get("focus_skill")}
+    return None
 
 
 @router.get("/sessions/{session_id}")
@@ -518,7 +564,7 @@ def stats(user=Depends(authenticate), db=Depends(get_db)):
         Attempt.user_id == user.id, Attempt.session_id.is_not(None), Attempt.created >= week_start)) or 0
     return {
         "domains": domains,
-        "skills": {sid: {"attempts": st["attempts"], "correct": st["correct"],
+        "skills": {sid: {"attempts": st["attempts"], "correct": st["correct"], "last": st["last"],
                          "recent_accuracy": (sum(st["recent"]) / len(st["recent"])) if st["recent"] else None}
                    for sid, st in per.items()},
         "calibration": {"sure": sure, "sure_right": sure - sure_wrong, "sure_wrong": sure_wrong},
@@ -526,3 +572,20 @@ def stats(user=Depends(authenticate), db=Depends(get_db)):
         "week_target": 4,
         "latest_total": session_plan.latest_total(db, user.id),
     }
+
+
+
+class ExampleIn(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=80)
+    session_id: str | None = None
+
+
+@router.post("/skills/{skill_id}/example")
+def skill_example(skill_id: str, body: ExampleIn, user=Depends(authenticate), db=Depends(get_db)):
+    """'Show example' when stuck: a solved question of the same skill. The question she's on is then
+    answered with help, so it's recorded as assisted and kept out of independent progress."""
+    existing = db.scalar(select(Attempt).where(Attempt.user_id == user.id, Attempt.idempotency_key == body.idempotency_key))
+    item = db.get(Item, existing.item_id) if existing else session_plan.pick(db, user.id, skill_id=skill_id)
+    if not item:
+        raise HTTPException(404, "No example left for this skill")
+    return study_item(item.id, StudyIn(idempotency_key=body.idempotency_key, session_id=body.session_id), user, db)
