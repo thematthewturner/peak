@@ -115,6 +115,7 @@ def diagnose_attempt(attempt_id: str, body: DiagnoseIn, user=Depends(authenticat
 class TicketIn(BaseModel):
     cause: str
     micro_skill: str | None = None
+    rule: str | None = Field(default=None, max_length=200)
 
 
 @router.post("/attempts/{attempt_id}/ticket")
@@ -124,7 +125,7 @@ def create_ticket(attempt_id: str, body: TicketIn, user=Depends(authenticate), d
         raise HTTPException(404, "Attempt not found")
     try:
         cause = Cause(body.cause)
-        ticket = tsvc.open_ticket(db, attempt, db.get(Item, attempt.item_id), cause, body.micro_skill)
+        ticket = tsvc.open_ticket(db, attempt, db.get(Item, attempt.item_id), cause, body.micro_skill, body.rule)
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     return _ticket(ticket)
@@ -133,7 +134,7 @@ def create_ticket(attempt_id: str, body: TicketIn, user=Depends(authenticate), d
 def _ticket(t: Ticket) -> dict:
     return {"id": t.id, "skill_id": t.skill_id, "cause": t.cause, "micro_skill": t.micro_skill, "cue": t.cue,
             "state": t.state, "next_due": t.next_due, "reopen_reason": t.reopen_reason,
-            "intervention": t.intervention}
+            "intervention": t.intervention, "rule": t.rule}
 
 
 def _own_ticket(db, user, ticket_id) -> Ticket:
@@ -278,7 +279,7 @@ def today(minutes: int = 25, user=Depends(authenticate), db=Depends(get_db)):
         raise HTTPException(422, f"minutes must be one of {composer.SESSION_MINUTES}")
     d = _today()
     due_v = db.scalar(select(func.count()).select_from(Ticket).where(
-        Ticket.user_id == user.id, Ticket.state.in_(["RETRY_DUE", "TRANSFER_DUE"]), Ticket.next_due <= d.isoformat())) or 0
+        Ticket.user_id == user.id, Ticket.state.in_(["RETRY_DUE", "TRANSFER_DUE", "CONFIRMED"]), Ticket.next_due <= d.isoformat())) or 0
     from .db import now as _now
     due_c = db.scalar(select(func.count()).select_from(Card).where(Card.user_id == user.id, Card.due <= _now())) or 0
     plan = db.scalar(select(Plan).where(Plan.user_id == user.id))
@@ -432,3 +433,96 @@ def bank(user=Depends(authenticate), db=Depends(get_db)):
     ready = db.scalar(select(func.count()).select_from(Item).where(Item.status == "verified", Item.benchmark_locked.is_(False))) or 0
     seen = db.scalar(select(func.count(func.distinct(Attempt.item_id))).where(Attempt.user_id == user.id)) or 0
     return {"ready": ready, "seen": seen}
+
+
+# ---- guided sessions (score guide s5) -------------------------------------------------------
+from . import session_plan  # noqa: E402
+
+
+class StartIn(BaseModel):
+    minutes: int = 45
+
+
+@router.post("/sessions/start")
+def start_guided(body: StartIn, user=Depends(authenticate), db=Depends(get_db)):
+    if body.minutes not in composer.SESSION_MINUTES:
+        raise HTTPException(422, f"minutes must be one of {composer.SESSION_MINUTES}")
+    if not db.scalar(select(func.count()).select_from(Card).where(Card.user_id == user.id)):
+        seed_cards(db, user.id)
+    plan = session_plan.build(db, user.id, body.minutes, _today())
+    s = Session(user_id=user.id, purpose="drill", mode="learning", minutes=plan["minutes"], plan=json.dumps(plan))
+    db.add(s)
+    db.commit()
+    return {"id": s.id, **plan}
+
+
+def _own_session(db, user, session_id) -> Session:
+    s = db.get(Session, session_id)
+    if not s or s.user_id != user.id:
+        raise HTTPException(404, "Session not found")
+    return s
+
+
+@router.get("/sessions/{session_id}")
+def get_guided(session_id: str, user=Depends(authenticate), db=Depends(get_db)):
+    s = _own_session(db, user, session_id)
+    done = set(db.scalars(select(Attempt.item_id).where(Attempt.session_id == s.id)))
+    return {"id": s.id, **json.loads(s.plan or "{}"), "done_items": sorted(done), "ended": s.ended}
+
+
+@router.get("/sessions/{session_id}/summary")
+def guided_summary(session_id: str, user=Depends(authenticate), db=Depends(get_db)):
+    s = _own_session(db, user, session_id)
+    return session_plan.summary(db, user.id, s.id)
+
+
+class StudyIn(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=80)
+    session_id: str | None = None
+
+
+@router.post("/items/{item_id}/study")
+def study_item(item_id: str, body: StudyIn, user=Depends(authenticate), db=Depends(get_db)):
+    """A worked example: the solved question is shown on purpose. Recording it first keeps the rule that no
+    key leaves the server without an attempt, and makes sure the item is never served later as 'fresh'."""
+    item = _item(db, item_id)
+    if not svc.servable(item, purpose="drill"):
+        raise HTTPException(404, "Item not found")
+    if body.session_id:
+        _own_session(db, user, body.session_id)
+    if not db.scalar(select(Attempt.id).where(Attempt.user_id == user.id, Attempt.idempotency_key == body.idempotency_key)):
+        db.add(Attempt(user_id=user.id, session_id=body.session_id, item_id=item.id, item_version=item.version,
+                       first_exposure=not svc.has_attempt(db, user.id, item.id), answer=None, correct=None,
+                       flags=json.dumps({"worked_example": True, "aided": True}), idempotency_key=body.idempotency_key))
+        db.commit()
+    return {**svc.student_safe(item), "key": json.loads(item.key or "[]"), "rationale": item.rationale}
+
+
+@router.get("/stats")
+def stats(user=Depends(authenticate), db=Depends(get_db)):
+    """Her skill map and calibration (score guide s4.6: make overconfidence concrete and visible)."""
+    per = session_plan.skill_stats(db, user.id)
+    skills = {s.id: s for s in db.scalars(select(Skill).where(Skill.parent_id.is_(None)))}
+    domains: dict[str, dict] = {}
+    for sid, st in per.items():
+        sk = skills.get(sid)
+        if not sk:
+            continue
+        d = domains.setdefault(sk.domain, {"section": sk.section, "attempts": 0, "correct": 0})
+        d["attempts"] += st["attempts"]
+        d["correct"] += st["correct"]
+    sure = sum(st["sure"] for st in per.values())
+    sure_wrong = sum(st["sure_wrong"] for st in per.values())
+    week_start = (_today() - timedelta(days=_today().weekday())).isoformat()
+    week = db.scalar(select(func.count(func.distinct(Attempt.session_id))).where(
+        Attempt.user_id == user.id, Attempt.session_id.is_not(None), Attempt.created >= week_start)) or 0
+    return {
+        "domains": domains,
+        "skills": {sid: {"attempts": st["attempts"], "correct": st["correct"],
+                         "recent_accuracy": (sum(st["recent"]) / len(st["recent"])) if st["recent"] else None}
+                   for sid, st in per.items()},
+        "calibration": {"sure": sure, "sure_right": sure - sure_wrong, "sure_wrong": sure_wrong},
+        "week_sessions": week,
+        "week_target": 4,
+        "latest_total": session_plan.latest_total(db, user.id),
+    }

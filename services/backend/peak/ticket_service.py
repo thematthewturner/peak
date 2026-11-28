@@ -58,7 +58,8 @@ def propose(db, attempt: Attempt, item: Item, *, cold_retry_correct: bool | None
     return diagnose(facts)
 
 
-def open_ticket(db, attempt: Attempt, item: Item, cause: Cause, micro_skill: str | None = None) -> Ticket:
+def open_ticket(db, attempt: Attempt, item: Item, cause: Cause, micro_skill: str | None = None,
+                rule: str | None = None) -> Ticket:
     """Idempotent per origin attempt. 'Careless' is never terminal: a micro-skill/cue is required."""
     existing = db.scalar(select(Ticket).where(Ticket.origin_attempt_id == attempt.id))
     if existing:
@@ -73,9 +74,17 @@ def open_ticket(db, attempt: Attempt, item: Item, cause: Cause, micro_skill: str
     ticket = Ticket(
         user_id=attempt.user_id, skill_id=item.skill_id, origin_attempt_id=attempt.id, cause=cause.value,
         micro_skill=micro_skill, cue=cue, state=ladder.State.OPEN.value,
-        timing_required=cause == Cause.PACING,
+        timing_required=cause == Cause.PACING, rule=(rule or "").strip()[:200] or None,
     )
     db.add(ticket)
+    if ticket.rule:
+        # Her own rule becomes a spaced-retrieval card: she recalls it, then sees what she wrote.
+        from . import srs
+        from .models import Card, Skill
+        skill = db.get(Skill, item.skill_id)
+        label = next((m.label for m in MICRO_SKILLS if m.key == micro_skill), None) or (skill.skill if skill else "this skill")
+        db.add(Card(user_id=attempt.user_id, kind="your rule", skill_id=item.skill_id,
+                    front=f"Your rule for: {label}", back=ticket.rule, state=srs.new_state()))
     db.commit()
     return ticket
 

@@ -20,12 +20,14 @@ def ev(i, days, fam, correct=True, **kw):
 
 def test_happy_path_to_confirmed():
     t = repaired()
-    assert t.state == State.RETRY_DUE and t.next_due == D0 + timedelta(days=1)
+    assert t.state == State.RETRY_DUE and t.next_due == D0 + timedelta(days=2)
     t = apply_evidence(t, ev(1, 1, "famB"))
     assert t.state == State.TRANSFER_DUE and t.next_due == D0 + timedelta(days=7)
     t = apply_evidence(t, ev(2, 8, "famC", mixed_unlabeled=True))
-    assert t.state == State.CONFIRMED
+    assert t.state == State.CONFIRMED and t.next_due == D0 + timedelta(days=21)
     assert maintain(t).state == State.MAINTAIN
+    retired = apply_evidence(t, ev(3, 21, "famD"))  # the 3-week check passes: retired
+    assert retired.state == State.MAINTAIN and retired.next_due is None
 
 
 def test_same_family_cannot_close():
@@ -92,3 +94,11 @@ def test_illegal_transitions():
         complete_repair(Ticket("x", None), D0)
     with pytest.raises(ValueError):
         maintain(repaired())
+
+
+def test_miss_at_the_three_week_check_reopens():
+    t = repaired()
+    t = apply_evidence(t, ev(1, 2, "famB"))
+    t = apply_evidence(t, ev(2, 8, "famC", mixed_unlabeled=True))
+    t = apply_evidence(t, ev(3, 21, "famD", correct=False))
+    assert t.state == State.REOPENED

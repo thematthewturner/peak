@@ -157,6 +157,8 @@ class Ticket(Base):
     next_due: Mapped[str | None] = mapped_column(String, nullable=True)
     timing_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     reopen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Her one-line fix rule in her own words (score guide s4.4): a light self-explanation, reviewed as a card.
+    rule: Mapped[str | None] = mapped_column(Text, nullable=True)
     created: Mapped[str] = mapped_column(String, default=now)
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-SESSION_MINUTES = (5, 15, 25, 40)
+SESSION_MINUTES = (5, 15, 25, 40, 45, 60)  # 45-60 is the score guide's dose (4-5 sessions a week)
 SCHOOL_TEST_THROTTLE_DAYS = 3
 MIN_PER_ITEM = 1.5  # planning average
 

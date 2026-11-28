@@ -13,7 +13,9 @@ from datetime import date, timedelta
 from enum import StrEnum
 
 TRANSFER_MIN_DAYS = 7
-RETRY_DAYS = 1
+# Spacing from the score guide (s4.3): re-attempt at ~2 days, ~1 week, ~3 weeks; retire after the 3-week check.
+RETRY_DAYS = 2
+MAINTAIN_CHECK_DAYS = 21
 ENTRENCHED_RECHECK_DAYS = (2, 7)  # sure+wrong: re-verify at 2-3 days and again at about 7
 
 
@@ -65,7 +67,7 @@ def start_repair(t: Ticket) -> Ticket:
 
 
 def complete_repair(t: Ticket, on: date, *, entrenched: bool = False) -> Ticket:
-    """Repair done: the next-day retry is due. Entrenched (sure+wrong) errors recheck later too."""
+    """Repair done: the first re-attempt is due in two days."""
     if t.state != State.REPAIRING:
         raise ValueError(f"cannot complete repair from {t.state}")
     return replace(
@@ -131,8 +133,13 @@ def apply_evidence(t: Ticket, ev: Evidence) -> Ticket:
         )
     counted = t.counted + (Counted(ev, reason),)
     nxt = replace(t, counted=counted, seen_attempts=seen)
+    if t.state == State.CONFIRMED:
+        return replace(nxt, state=State.MAINTAIN, next_due=None)  # passed the 3-week check: retired
+    if t.state == State.MAINTAIN:
+        return nxt
     if is_confirmed(nxt):
-        return replace(nxt, state=State.CONFIRMED, next_due=None)
+        anchor = t.repaired_on or ev.on
+        return replace(nxt, state=State.CONFIRMED, next_due=max(ev.on + timedelta(days=7), anchor + timedelta(days=MAINTAIN_CHECK_DAYS)))
     if t.state == State.RETRY_DUE:
         due = (t.repaired_on or ev.on) + timedelta(days=TRANSFER_MIN_DAYS)
         return replace(nxt, state=State.TRANSFER_DUE, next_due=due)
