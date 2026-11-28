@@ -48,3 +48,6 @@ export type Ticket = {
 };
 export type Card = { id: string; kind: string; front: string; back: string };
 export type Series = Record<string, { id: string; taken_on: string; rw: number | null; math: number | null; total: number | null }[]>;
+export type Taxonomy = { causes: string[]; micro_skills: MicroSkill[] };
+export type SkillMap = Record<string, { name: string; domain: string; section: string }>;
+export type AttemptRow = { id: string; item_id: string; correct: boolean | null; confidence: string | null; elapsed_ms: number | null; created: string };

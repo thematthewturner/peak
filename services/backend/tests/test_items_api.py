@@ -136,3 +136,12 @@ def test_taxonomy_endpoint(clients):
     _, student = clients
     body = student.get("/api/taxonomy").json()
     assert "execution" in body["causes"] and any(m["key"] == "skips_plug_back" for m in body["micro_skills"])
+
+
+def test_skills_names_for_the_ui(clients, db):
+    from peak.seed import seed_skills
+    seed_skills(db)
+    _, student = clients
+    body = student.get("/api/skills").json()
+    assert body["advanced_math.nonlinear-functions"] == {"name": "Nonlinear functions", "domain": "advanced_math", "section": "math"}
+    assert not any(k.startswith("micro.") for k in body)

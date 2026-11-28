@@ -1,5 +1,8 @@
 # Launch runbook: peak.mturner.work
 
+> **Dormant.** Peak v1 runs locally on the Mac instead (see [`MAC.md`](MAC.md)). This hosted path is kept for
+> reference only: the web image is no longer built, and the UI is now a static export served by the backend.
+
 Peak is a separate Compose project. For the first launch it is routed through **Belay's existing Caddy** with a
 six-line Compose change and one Caddy block (`docs/launch/belay-route-peak.patch`). The PRD's cleaner "separate
 edge proxy" project can come later without changing Peak. Nothing here runs automatically; every step is yours.

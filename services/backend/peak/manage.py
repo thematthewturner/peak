@@ -7,12 +7,12 @@ from .auth import passwords
 from .db import Login, SessionLocal, User
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Peak invite-only account provisioning")
     parser.add_argument("username")
     parser.add_argument("--role", required=True, choices=["parent", "student"])
     parser.add_argument("--household", default="family")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     password = getpass.getpass("New password (at least 12 characters): ")
     if len(password) < 12 or password != getpass.getpass("Confirm password: "):
         raise SystemExit("Password must match and contain at least 12 characters")

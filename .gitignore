@@ -9,3 +9,4 @@ corpus-data/
 node_modules/
 .next/
 *.tsbuildinfo
+apps/web/out/

@@ -32,3 +32,9 @@ PROVIDER_TIMEOUT_SECONDS = int(os.getenv("PROVIDER_TIMEOUT_SECONDS", "600"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT = os.getenv("LOG_FORMAT", "json")
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "America/New_York")
+
+# Local Mac mode (python -m peak.local): one process serves the app and its data on 127.0.0.1.
+LOCAL = os.getenv("PEAK_LOCAL", "0") == "1"
+LOCAL_TOKEN = os.getenv("PEAK_LOCAL_TOKEN", "")
+LOCAL_STUDENT = os.getenv("PEAK_LOCAL_STUDENT", "addison")
+WEB_DIR = os.getenv("PEAK_WEB_DIR", "")

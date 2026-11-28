@@ -2,8 +2,9 @@
 
 SAT prep for Addison. Find the points she's still losing, fix them once, prove it on a question she's never seen.
 
+- **Run it on the Mac: [`docs/MAC.md`](docs/MAC.md)** (v1 is a local app; no server)
 - Plan: [`docs/PRD.md`](docs/PRD.md) · Build status: [`docs/STATUS.md`](docs/STATUS.md)
-- Deployment (owner steps, nothing automatic): [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- Hosted deployment (dormant; kept for reference): [`docs/LAUNCH.md`](docs/LAUNCH.md)
 - Private corpus rules and import: [`docs/DATA.md`](docs/DATA.md)
 
 ## Develop

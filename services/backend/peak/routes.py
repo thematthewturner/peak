@@ -418,3 +418,9 @@ def taxonomy(user=Depends(authenticate)):
         "causes": [c.value for c in Cause],
         "micro_skills": [{"key": m.key, "cause": m.cause.value, "label": m.label, "cue": m.cue} for m in MICRO_SKILLS],
     }
+
+
+@router.get("/skills")
+def skills(user=Depends(authenticate), db=Depends(get_db)):
+    rows = db.scalars(select(Skill).where(Skill.parent_id.is_(None))).all()
+    return {s.id: {"name": s.skill, "domain": s.domain, "section": s.section} for s in rows}

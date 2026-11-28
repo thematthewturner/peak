@@ -4,8 +4,12 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
+import secrets
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -30,8 +34,14 @@ app = FastAPI(title="Peak", lifespan=lifespan)
 app.include_router(router)
 
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost"}
+
+
 @app.middleware("http")
 async def security(request, call_next):
+    # Local mode answers only to loopback host names, which blocks DNS-rebinding pages from reaching it.
+    if config.LOCAL and request.headers.get("host", "").split(":")[0] not in LOCAL_HOSTS:
+        return Response("Host not allowed", status_code=400)
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         if request.headers.get("origin") != config.BASE_URL:
             return Response("Origin not allowed", status_code=403)
@@ -163,3 +173,30 @@ def readiness(db=Depends(get_db)):
     ready = not stale
     body = {"status": "ok" if ready else "degraded", "worker_stale": stale, "oldest_pending_job": oldest}
     return JSONResponse(body, status_code=200 if ready else 503)
+
+
+@app.get("/api/local/enter")
+def local_enter(t: str = "", db=Depends(get_db)):
+    """Local mode only: the launcher opens this URL with a per-launch token, so opening Peak needs no login.
+    The token is never stored and changes every launch; without it the regular sign-in page applies."""
+    if not config.LOCAL or not config.LOCAL_TOKEN or not secrets.compare_digest(t, config.LOCAL_TOKEN):
+        raise HTTPException(404, "Not found")
+    user = db.scalar(select(User).where(User.username == config.LOCAL_STUDENT))
+    if not user:
+        raise HTTPException(404, "Not found")
+    response = RedirectResponse("/today/", status_code=303)
+    create_login(db, user, response)
+    db.commit()
+    return response
+
+
+def mount_web(target, directory) -> bool:
+    """Serve the exported web UI from the same process as the API (registered last, so /api wins)."""
+    path = Path(directory) if directory else None
+    if not path or not (path / "index.html").exists():
+        return False
+    target.mount("/", StaticFiles(directory=str(path), html=True), name="web")
+    return True
+
+
+mount_web(app, config.WEB_DIR)

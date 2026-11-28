@@ -4,14 +4,16 @@ import { createApi } from "@/lib/api";
 
 const api = createApi(() => "", { redirectOn401: false });
 
-export default function Login() {
+// Peak opens straight into Today from the launcher. This page is for the parent account, or if the session ends.
+export default function SignIn() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    api("/me").then(() => location.replace("/today")).catch(() => {});
+    api("/me").then(() => location.replace("/today/")).catch(() => setChecking(false));
   }, []);
 
   async function submit(e: React.FormEvent) {
@@ -20,29 +22,28 @@ export default function Login() {
     setError("");
     try {
       await api("/login", "POST", { username, password });
-      location.replace("/today");
+      location.replace("/today/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not sign in");
       setBusy(false);
     }
   }
 
+  if (checking) return <div className="signin" />;
   return (
-    <main className="shell">
-      <form className="card" onSubmit={submit}>
-        <h1>Peak</h1>
-        <p className="muted">Know exactly which points you&apos;re losing. Fix them once. Prove it on a question you&apos;ve never seen.</p>
-        <label>
-          Username
-          <input type="text" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+    <div className="signin">
+      <form onSubmit={submit}>
+        <h1 className="title">Peak</h1>
+        <p className="sub">Open Peak from its app icon to go straight in. This sign-in is for the parent account.</p>
+        <label className="field">Username
+          <input id="username" type="text" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
         </label>
-        <label>
-          Password
-          <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        <label className="field">Password
+          <input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
         {error && <p className="err" role="alert">{error}</p>}
-        <button className="btn" disabled={busy || !username || !password}>Sign in</button>
+        <button className="go" disabled={busy || !username || !password}>Sign in</button>
       </form>
-    </main>
+    </div>
   );
 }
